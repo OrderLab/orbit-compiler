@@ -9,7 +9,7 @@ The compiler is built on top of the LLVM framework.
 
 ## Requirement
 
-* LLVM 5.0.1
+* LLVM 5.0.x
 
 ## Build
 
@@ -46,7 +46,7 @@ the `lib` directory or using the executable in the `tools` directory.
 
 ```
 cd build
-opt -load lib/libLLVMDefUse.so -mydefuse < ../test/loop1.bc > /dev/nul
+opt -load lib/libLLVMDefUse.so -mydefuse < ../test/loop1.bc > /dev/null
 ```
 
 ### Compile a large system for analysis
