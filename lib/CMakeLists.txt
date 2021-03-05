@@ -2,6 +2,10 @@ add_library(DefUse SHARED
   DefUse/DefUse.cpp
 )
 
+add_library(Basic SHARED
+  Basic/Basic.cpp
+)
+
 add_library(Utils SHARED
   Utils/String.cpp
   Utils/Path.cpp
