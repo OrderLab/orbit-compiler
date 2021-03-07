@@ -16,3 +16,5 @@ CMakeCache.txt
 cmake-build-debug/
 
 Release+Asserts/
+
+.vscode/

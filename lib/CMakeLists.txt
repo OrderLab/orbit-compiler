@@ -2,8 +2,12 @@ add_library(DefUse SHARED
   DefUse/DefUse.cpp
 )
 
-add_library(Basic SHARED
-  Basic/Basic.cpp
+add_library(HelloWorld SHARED
+  HelloWorld/HelloWorld.cpp
+)
+
+add_library(ArgumentCounter SHARED
+  ArgumentCounter/ArgumentCounter.cpp
 )
 
 add_library(Utils SHARED
