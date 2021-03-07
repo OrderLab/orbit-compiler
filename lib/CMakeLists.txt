@@ -10,6 +10,10 @@ add_library(ArgumentCounter SHARED
   ArgumentCounter/ArgumentCounter.cpp
 )
 
+add_library(StaticCallCounter SHARED  
+  StaticCallCounter/StaticCallCounter.cpp
+)
+
 add_library(Utils SHARED
   Utils/String.cpp
   Utils/Path.cpp

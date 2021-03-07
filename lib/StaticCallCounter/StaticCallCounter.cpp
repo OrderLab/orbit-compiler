@@ -1,26 +1,64 @@
+#include "llvm/ADT/MapVector.h"
+#include "llvm/IR/CallSite.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/IR/Function.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
 using namespace llvm;
 
-namespace {
-struct StaticCallCounter : public FunctionPass {
-  static char ID;
-  StaticCallCounter() : FunctionPass(ID) {}
+typedef llvm::MapVector<const llvm::Function *, unsigned> ResultStaticCC;
 
-  bool runOnFunction(Function &F) override {
-    for(auto it = F.arg_begin(); it != F.arg_end(); it++) {
-      errs() << it->getArgNo() << "\n";
+static void printResults(llvm::raw_ostream &OutS,
+                         const ResultStaticCC &DirectCalls);
+
+struct StaticCallCounter : public llvm::ModulePass {
+  static char ID;
+  ResultStaticCC results;
+  StaticCallCounter() : llvm::ModulePass(ID) {}
+
+  ResultStaticCC getStaticCalls(llvm::Module &M) {
+    ResultStaticCC result;
+
+    for (auto &Func : M) {
+      for (auto &BB : Func) {
+        for (auto &Ins : BB) {
+          // Check if the instruction is a calling instruction
+          if (auto CI = dyn_cast<CallInst>(&Ins)) {
+            auto FunctionCall = CI->getCalledFunction();
+            if (nullptr == FunctionCall) continue;
+
+            auto CallCount = result.find(FunctionCall);
+            if (CallCount == result.end()) {
+              CallCount = result.insert(std::make_pair(FunctionCall, 0)).first;
+            }
+            ++CallCount->second;
+          }
+        }
+      }
     }
+
+    return result;
+  }
+
+  bool runOnModule(llvm::Module &M) override {
+    results = getStaticCalls(M);
     return false;
   }
-}; // end of struct StaticCallCounter
-}  // end of anonymous namespace
 
-char StaticCallCounter::ID = 1;
-static RegisterPass<StaticCallCounter> X("hello", "StaticCallCounter World Pass",
-                             false /* Only looks at CFG */,
+  void print(raw_ostream &O, const Module *M) const override {
+    printResults(O, results);
+  }
+};
+
+void printResults(llvm::raw_ostream &OutS, const ResultStaticCC &DirectCalls) {
+  for (auto &Call : DirectCalls) {
+    OutS << Call.first->getName().str().c_str() << " " << Call.second << "\n";
+  }
+}
+
+char StaticCallCounter::ID = 2;
+RegisterPass<StaticCallCounter> X(/*PassArg=*/"legacy-static-cc",
+                                  /*Name=*/"LegacyStaticCallCounter",
+                                  /*CFGOnly=*/true,
+                                  /*is_analysis=*/true);
