@@ -71,5 +71,8 @@ endif()
 include_directories(include)
 include_directories(lib)
 
+add_subdirectory(runtime)
+link_directories(runtime)
+
 add_subdirectory(lib)
 add_subdirectory(tools)

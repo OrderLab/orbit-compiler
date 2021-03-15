@@ -15,14 +15,11 @@ Usage:
 
   -h, --help:       display this message
 
-      --plugin:     path to libLLVMInstrument.so, default is build/analyzer/lib
-                    (this flag is deprecated)
-
-      --load-store: instrument regular load/store instructions
+      --printf:     instrument using regular printf (w/o runtime lib)
 
   -l, --link:       additional link flags to pass to GCC
 
-  -r, --runtime:    path to libAddrTracker.a/.so runtime 
+  -r, --runtime:    path to libOrbitTracker.a/.so runtime 
 
       --dry-run:    dry run, do not
 
@@ -40,12 +37,8 @@ function parse_args()
         output="$2"
         shift 2
         ;;
-      --plugin)
-        plugin_path="$2"
-        shift 2
-        ;;
-      --load-store)
-        load_store=1
+      --printf)
+        with_runtime=0
         shift 1
         ;;
       -l|--link)
@@ -80,7 +73,7 @@ instrumenter=
 maybe=
 runtime_path=
 link_libs=
-load_store=0
+with_runtime=1
 plugin_args=""
 link_flags=""
 
@@ -100,7 +93,7 @@ if [ ! -f $source_bc_file ]; then
   exit 1
 fi
 if [ -z "$plugin_path" ]; then
-  plugin_path=${build_dir}/analyzer/lib/libLLVMInstrument.so
+  plugin_path=${build_dir}/lib/libLLVMInstrument.so
 fi
 instrumenter=${build_dir}/bin/instrumentor
 if [ ! -x $instrumenter ]; then
@@ -108,13 +101,13 @@ if [ ! -x $instrumenter ]; then
   exit 1
 fi
 if [ -z "$runtime_path" ]; then
-  runtime_path=${build_dir}/analyzer/runtime
+  runtime_path=${build_dir}/runtime
 fi
 if [ ! -d "$runtime_path" ]; then
   echo "Runtime path $runtime_path does not exist"
   exit 1
 fi
-runtime_lib="$runtime_path"/libAddrTracker.a
+runtime_lib="$runtime_path"/libOrbitTracker.a
 if [ ! -f  $runtime_lib ]; then
   echo "Runtime library $runtime_lib not found"
   exit 1
@@ -131,22 +124,32 @@ else
   output_exe=${output}
 fi
 
-if [ $load_store -ne 0 ]; then
-  instrumenter_args="$instrumenter_args -regular-load-store"
-fi
-
-if [ -z "$link_flags" ] && [ $load_store -eq 0 ]; then
-  # if link flags is not supplied and it's not a regular load-store 
-  # instrumentation, try to be smart here by automatically add the 
-  # -lpmem link flag to link with libpmem. If the program is linked
-  # with libpmemobj instead, should pass the link flag explicitly.
-  link_flags="-lpmem -lmemkind"
+if [ $with_runtime -eq 0 ]; then
+  instrumenter_args="$instrumenter_args -use-printf"
 fi
 
 $maybe $instrumenter $instrumenter_args $source_bc_file -o $output_bc
-$maybe llc -O0 -disable-fp-elim -filetype=asm -o $output_asm $output_bc
-$maybe llvm-dis $output_bc
-# linking with shared runtime lib, flexible but slower
-# $maybe gcc -no-pie -O0 -fno-inline -o $output_exe $output_asm -L $runtime_path -lAddrTracker
-# linking with static runtime lib, less flexible but faster
-$maybe g++ -no-pie -pg -O0 -g -fno-inline -o $output_exe $output_asm -L $runtime_path -l:libAddrTracker.a $link_flags
+
+# Newer clang can directly compile bitcode to executable, Yay!
+if [ $with_runtime -eq 0 ]; then
+  # when using regular printf for instrumentation, we do not need to link 
+  # with the runtime tracker library
+  $maybe clang -o $output_exe $output_bc
+else
+  # otherwise, we need to link with the library to produce the executable
+  # here we are linking with static lib, which is less flexible but faster
+  $maybe clang -o $output_exe -L $runtime_path -l:libOrbitTracker.a $output_bc
+  # another way is to link with the shared lib, which is flexible but slower
+  # $maybe clang -o $output_exe -L $runtime_path -lOrbitTracker $output_bc
+fi
+
+# Old way of producing executable through the assembly
+
+# $maybe llc -O0 -disable-fp-elim -filetype=asm -o $output_asm $output_bc
+# $maybe llvm-dis $output_bc
+# # linking with shared runtime lib, flexible but slower
+# # $maybe gcc -no-pie -O0 -fno-inline -o $output_exe $output_asm -L $runtime_path -lAddrTracker
+# # linking with static runtime lib, less flexible but faster
+# $maybe g++ -no-pie -pg -O0 -g -fno-inline -o $output_exe $output_asm -L $runtime_path -l:libAddrTracker.a $link_flags
+
+echo "$(tput setaf 2)Instrumented executable is saved at $output_exe $(tput sgr 0)"
