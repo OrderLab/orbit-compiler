@@ -33,6 +33,28 @@ target_link_libraries(LLVMDefUse
   PUBLIC Utils
 )
 
+add_library(Matcher SHARED
+  Matcher/Scope.cpp
+  Matcher/Matcher.cpp
+)
+
+add_library(Instrumenter SHARED
+  Instrument/AllocInstrumenter.cpp
+)
+
+target_link_libraries(Instrumenter
+  PRIVATE OrbitTracker
+  PRIVATE ${llvm_transformutils}
+)
+
+add_library(LLVMInstrument SHARED
+  Instrument/InstrumentAllocPass.cpp
+)
+
+target_link_libraries(LLVMInstrument
+  PUBLIC Instrumenter
+)
+
 if (APPLE)
   set_target_properties(DefUse PROPERTIES
     LINK_FLAGS "-undefined dynamic_lookup"
@@ -45,3 +67,4 @@ if (APPLE)
 				PRIVATE ${llvm_support}
 				PRIVATE ${llvm_core})
 endif(APPLE)
+
