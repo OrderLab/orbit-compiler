@@ -11,6 +11,7 @@ cmake_install.cmake
 CMakeCache.txt
 
 /build/
+/target-sys/
 
 .idea/
 cmake-build-debug/

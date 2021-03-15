@@ -55,43 +55,127 @@ For large software, we need to modify its build system to use clang for compilat
 The most systematic way is using the [WLLVM](https://github.com/travitch/whole-program-llvm) 
 wrapper.
 
-Example instructions to be added.
+```
+$ pip install wllvm
+```
+
+The basic idea is to replace the regular C/C++ compiler call (e.g., `gcc`/`g++`) 
+with `wllvm`/`wllvm++` wrapper call, which will take care of the details for using
+LLVM and clang to produce the bitcode.
+
+Large systems usually use Makefile or CMake as the build system. In these cases,
+it is fairly simple: define environment variables `CC` (and `CXX`) to be `wllvm` 
+(and `wllvm++`), without changing the Makefiles. The compilation will be 
+transparent. In the end, invoke the `extract-bc` command on the built
+executable, which will produce the bitcode file.
+
+Below is an example of compiling MySQL for analysis.
+
+A. Download MySQL source code:
+
+```
+$ mkdir -p target-sys/mysql-build
+$ cd target-sys
+$ wget -nc https://downloads.mysql.com/archives/mysql-5.5/mysql-5.5.59.tar.gz
+$ tar xzvf mysql-5.5.59.tar.gz
+```
+
+
+B. Compile with `wllvm`:
+
+```
+$ cd mysql-build
+$ CC=wllvm CXX=wllvm++ cmake ../mysql-5.5.59 -DCMAKE_C_FLAGS_DEBUG="-g -O0" -DCMAKE_CXX_FLAGS_DEBUG="-g -O0" -DMYSQL_MAINTAINER_MODE=false
+$ make -j$(nproc)
+$ extract-bc sql/mysqld
+```
+
+You should see a `mysqld.bc` in the `sql` directory (where the normal `mysqld` 
+executable resides). This bitcode file will be the target file for analysis 
+and instrumentation.
 
 ## Usage
 
-TBA
+### Instrumentation
 
-
-## Code Style
-
-### Command-Line
-We generally follow the [Google Cpp Style Guide](https://google.github.io/styleguide/cppguide.html#Formatting). 
-There is a [.clang-format](.clang-format) file in the root directory that is derived from this style.
-It can be used with the `clang-format` tool to reformat the source files, e.g.,
+#### Instrumenting test program
 
 ```
-$ clang-format -style=file lib/DefUse/DefUse.cpp
+$ cd test && make
+$ cd ../build
+$ ../scripts/instrument-compile.sh --printf ../test/alloc.bc
 ```
 
-This will use the `.clang-format` file to re-format the source file and print it to the console. 
-To re-format the file in-place, add the `-i` flag.
+This will instrument all the `malloc` calls in the `alloc.c` test program
+and insert a `printf` to output the malloc size and return pointer address.
+The resulted instrumented executable is `alloc-instrumented`, which can be 
+directly executed.
 
 ```
-$ clang-format -i -style=file lib/DefUse/DefUse.cpp
-$ clang-format -i -style=file lib/*/*.cpp
+$ ./alloc-instrumented
+orbit alloc: 16 => 0x12f1260
+orbit alloc: 16 => 0x12f1690
+orbit alloc: 16 => 0x12f16b0
+orbit alloc: 4 => 0x12f16d0
+foo(5)=30
+orbit alloc: 16 => 0x12f16b0
+orbit alloc: 16 => 0x12f1690
+orbit alloc: 16 => 0x12f1260
+orbit alloc: 4 => 0x12f16d0
+foo(15)=90
+orbit alloc: 16 => 0x12f1260
+orbit alloc: 16 => 0x12f1690
+orbit alloc: 16 => 0x12f16b0
+orbit alloc: 4 => 0x12f16d0
+foo(20)=120
 ```
 
-### Make target
-We defined a make target in the CMakeFiles to run `clang-format` on all source
-files or only those source files that are changed.
+A more complex instrumentation will involve instrumenting calls to a runtime 
+library (`OrbitTracker`) in `runtime` directory. This allows decoupling of the
+instrumented logic to the library. Otherwise, doing everything in raw LLVM 
+IR is tedious and error-prone.
 
 ```
-make format
+$ ../scripts/instrument-compile.sh ../test/alloc.bc
 ```
 
-### IDE
-If you are using Clion, the IDE supports `.clang-format` style. Go to `Settings/Preferences | Editor | Code Style`, 
-check the box `Enable ClangFormat with clangd server`. 
+This will also produce `alloc-instrumented`. But the difference is that 
+this instrumented binary will call our custom tracking function `void __orbit_track_gobj(char *addr, size_t size)`
+in the runtime library (instead of simple `printf`), which is linked with the executable.
 
-### Vim
-`clang-format` can also be integrated with vim [doc](http://clang.llvm.org/docs/ClangFormat.html#vim-integration).
+Now try running this instrumented binary:
+
+```
+$ ./alloc-instrumented
+opening orbit tracker output file orbit_gobj_pid_985.dat
+foo(5)=30
+foo(15)=90
+foo(20)=120
+
+$ cat orbit_gobj_pid_985.dat
+16 => 0x15b9490
+16 => 0x15ba4c0
+16 => 0x15ba4e0
+4 => 0x15ba500
+16 => 0x15ba4e0
+16 => 0x15ba4c0
+16 => 0x15b9490
+4 => 0x15ba500
+16 => 0x15b9490
+16 => 0x15ba4c0
+16 => 0x15ba4e0
+4 => 0x15ba500
+```
+
+As shown above, the runtime tracking library saves the information to a file 
+as the program runs. Note that the last part of the trace file is PID (`orbit_gobj_pid_xxx.dat`), 
+which will change in different runs.
+
+
+#### Instrumenting MySQL
+
+TBA.
+
+## Code Styles
+
+Please refer to the [code style](codeStyle.md) for the coding convention and practice.
