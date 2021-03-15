@@ -8,9 +8,11 @@
 
 #include "Instrument/AllocInstrumenter.h"
 
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <llvm/IR/DebugInfoMetadata.h>
@@ -72,7 +74,7 @@ bool AllocInstrumenter::initHookFuncs(Module *M, LLVMContext &llvm_context) {
     }
 
     _track_gobj_func = cast<Function>(
-        M->getOrInsertFunction(getRuntimeHookName(), VoidTy, _I8PtrTy, _I32Ty));
+        M->getOrInsertFunction(getRuntimeHookName(), _I8PtrTy, _I32Ty));
     if (!_track_gobj_func) {
       errs() << "could not find function " << getRuntimeHookName() << "\n";
       return false;
@@ -147,22 +149,19 @@ bool AllocInstrumenter::instrumentInstr(Instruction *instr) {
   Value *alloc_size;
   Value *alloc_addr;
 
-  if (isa<CallInst>(instr)) {
-    CallInst *ci = dyn_cast<CallInst>(instr);
-    Function *callee = ci->getCalledFunction();
-    if (!callee) {
-      return false;
-    }
-    istringstream iss(callee->getName());
-    std::string token;
-    std::getline(iss, token, '.');
-    if (token.compare("malloc") == 0) {
-      alloc_size = ci->getArgOperand(0);
-      alloc_addr = ci;
-      errs() << "Got malloc\n";
-    } else {
-      return false;
-    }
+  CallSite cs(instr);
+  if (!cs.isInvoke() && !cs.isCall()) return false;
+  Function *callee = cs.getCalledFunction();
+  if (callee == NULL) return false;
+
+  alloc_addr = instr;
+  std::string demangled = demangleFunctionName(callee);
+  errs() << "Got " << demangled << "\n";
+
+  if (demangled.compare("mem_heap_alloc") == 0) {
+    alloc_size = cs.getArgument(1);
+  } else if (demangled.compare("ut_allocator<unsigned char>::allocate") == 0) {
+    alloc_size = cs.getArgOperand(1);
   } else {
     return false;
   }
@@ -170,7 +169,7 @@ bool AllocInstrumenter::instrumentInstr(Instruction *instr) {
   // insert a call instruction to the hook function with CallInst::Create.
   // Pass addr as an argument to this call instruction
   IRBuilder<> builder(instr);
-  builder.SetInsertPoint(instr->getNextNode());
+  builder.SetInsertPoint(instr);
 
   if (_track_with_printf) {
     Value *str = builder.CreateGlobalStringPtr("orbit alloc: %zu => %p\n");
@@ -180,13 +179,26 @@ bool AllocInstrumenter::instrumentInstr(Instruction *instr) {
     params.push_back(alloc_addr);
     builder.CreateCall(_printf_func, params);
   } else {
-    // insert an __orbit_track_gobj call
+    // Replace callInst with an __orbit_track_gobj call
+    // We use ReplaceInstWithInst
     // need to explicitly cast the address, which could be i32* or i64*, to i8*
     _hook_point_guid_map[instr] = AllocVarCurrentGuid;
     _guid_hook_point_map[AllocVarCurrentGuid] = instr;
-    auto i8addr = builder.CreateBitCast(alloc_addr, _I8PtrTy);
+    std::vector<llvm::Value *> args;
     auto i32size = builder.CreateIntCast(alloc_size, _I32Ty, false);
-    builder.CreateCall(_track_gobj_func, {i8addr, i32size});
+    args.push_back(i32size);
+    Instruction *newInstr = NULL;
+    if (isa<CallInst>(instr)) {
+      newInstr = CallInst::Create(_track_gobj_func, args);
+    } else if (isa<InvokeInst>(instr)) {
+      InvokeInst *ii = dyn_cast<InvokeInst>(instr);
+      newInstr = InvokeInst::Create(_track_gobj_func, ii->getNormalDest(),
+                                    ii->getUnwindDest(), args);
+    } else {
+      return false;
+    }
+    ReplaceInstWithInst(instr, newInstr);
+
     AllocVarCurrentGuid++;
   }
   _instrument_cnt++;

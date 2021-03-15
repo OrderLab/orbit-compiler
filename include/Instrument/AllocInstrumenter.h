@@ -22,6 +22,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Instrumentation.h"
 
+#include "Utils/LLVM.h"
+
 #include <map>
 #include <set>
 #include <string>
@@ -35,7 +37,7 @@ class Slice;
 namespace instrument {
 extern unsigned int AllocVarGuidStart;
 
-/* String constants for the names of tracker functions defined in 
+/* String constants for the names of tracker functions defined in
  * runtime/gobj_tracker.h
  */
 
@@ -43,13 +45,9 @@ inline StringRef getRuntimeHookInitName() {
   return "__orbit_gobj_tracker_init";
 }
 
-inline StringRef getRuntimeHookName() {
-  return "__orbit_track_gobj";
-}
+inline StringRef getRuntimeHookName() { return "__orbit_alloc_gobj"; }
 
-inline StringRef getTrackDumpHookName() {
-  return "__orbit_gobj_tracker_dump";
-}
+inline StringRef getTrackDumpHookName() { return "__orbit_gobj_tracker_dump"; }
 
 inline StringRef getTrackHookFinishName() {
   return "__orbit_gobj_tracker_finish";
@@ -60,7 +58,8 @@ class AllocInstrumenter {
   // by default we will use our lightweight runtime library for tracking
   // setting use_printf to true will use printf for tracking
   AllocInstrumenter(bool use_printf = true)
-      : _initialized(false), _instrument_cnt(0),
+      : _initialized(false),
+        _instrument_cnt(0),
         _track_with_printf(use_printf) {}
 
   bool initHookFuncs(Module *M, LLVMContext &context);
@@ -92,7 +91,7 @@ class AllocInstrumenter {
   PointerType *_I8PtrTy;
 };
 
-}  // namespace llvm
 }  // namespace instrument
+}  // namespace llvm
 
 #endif /* _ALLOC_INSTRUMENT_H_ */

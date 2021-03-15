@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <llvm/Config/llvm-config.h>
 
@@ -24,8 +25,29 @@
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_os_ostream.h>
+#include "llvm/Demangle/Demangle.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Mangler.h"
+#include "llvm/IR/Value.h"
+
+using namespace llvm;
 
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext& context,
                                           std::string inputFile);
+
+std::string demangleName(std::string);
+
+// Operations on Functions
+bool isConstructor(Value*);
+std::string demangleFunctionName(Function*);
+Function* getFunctionWithName(std::string name, Module& M);
+std::vector<Function*> getFunctionsWithType(Type* type, Module& M);
+
+// Operations on Instructions
+bool isAccessingSameStructVar(const GetElementPtrInst* inst1,
+                              const GetElementPtrInst* inst2);
+
+// Printing
+void printCallSite(Value* val);
 
 #endif /* _UTILS_LLVM_H_ */

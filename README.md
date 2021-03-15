@@ -73,11 +73,22 @@ Below is an example of compiling MySQL for analysis.
 
 A. Download MySQL source code:
 
+MySQL - 5.5.59
+
 ```
 $ mkdir -p target-sys/mysql-build
 $ cd target-sys
 $ wget -nc https://downloads.mysql.com/archives/mysql-5.5/mysql-5.5.59.tar.gz
 $ tar xzvf mysql-5.5.59.tar.gz
+```
+
+MySQL - 5.7.31
+
+```
+$ mkdir -p target-sys/mysql-build
+$ cd target-sys
+$ wget -nc https://downloads.mysql.com/archives/mysql-5.7/mysql-5.7.31.tar.gz
+$ tar xzvf mysql-5.7.31.tar.gz
 ```
 
 
@@ -89,6 +100,18 @@ $ CC=wllvm CXX=wllvm++ cmake ../mysql-5.5.59 -DCMAKE_C_FLAGS_DEBUG="-g -O0" -DCM
 $ make -j$(nproc)
 $ extract-bc sql/mysqld
 ```
+
+MySQL - 5.7.31
+
+```
+$ cd mysql-build
+$ export LLVM_COMPILER=clang
+$ CC=wllvm CXX=wllvm++ cmake ../mysql-5.7.31 -DCMAKE_C_FLAGS_DEBUG="-g -O0" -DCMAKE_CXX_FLAGS_DEBUG="-g -O0" -DMYSQL_MAINTAINER_MODE=false
+$ make -j$(nproc)
+$ extract-bc sql/mysqld
+
+```
+TODO
 
 You should see a `mysqld.bc` in the `sql` directory (where the normal `mysqld` 
 executable resides). This bitcode file will be the target file for analysis 
@@ -174,7 +197,19 @@ which will change in different runs.
 
 #### Instrumenting MySQL
 
-TBA.
+Running ObiWanAnalysis
+TODO
+
+```
+opt -load lib/libObiWanAnalysisPass.so -obi-wan-analysis -target-functions DeadlockChecker::check_and_resolve < ../target-sys/mysql-build/sql/mysqld.bc > /dev/null
+```
+
+```
+clang deadlock-instrument.bc -o test-instrumented -L /home/ubuntu/orbit-compiler-temp/build/runtime -l:libOrbitTracker.a -lstdc++
+```
+
+#### Current Limitations
+TODO
 
 ## Code Styles
 

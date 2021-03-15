@@ -2,5 +2,6 @@
 *.ll
 simple
 loop1
+alloc
 linked
 field-sensitive

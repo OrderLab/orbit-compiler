@@ -1,21 +1,36 @@
 add_library(DefUse SHARED
   DefUse/DefUse.cpp
+  Utils/LLVM.cpp
+  CallGraph/CallGraph.cpp
+)
+
+add_library(ObiWanAnalysis SHARED
+  ObiWanAnalysis/ObiWanAnalysis.cpp
+  DefUse/DefUse.cpp
+  Utils/LLVM.cpp
+  CallGraph/CallGraph.cpp
+)
+
+add_library(ObiWanAnalysisPass SHARED
+  ObiWanAnalysis/ObiWanAnalysisPass.cpp
+  ObiWanAnalysis/ObiWanAnalysis.cpp
+  DefUse/DefUse.cpp
+  Utils/LLVM.cpp
+  CallGraph/CallGraph.cpp
+  Instrument/AllocInstrumenter.cpp
+)
+
+add_library(CallGraph SHARED
+  CallGraph/CallGraph.cpp
+  Utils/LLVM.cpp
 )
 
 add_library(HelloWorld SHARED
   HelloWorld/HelloWorld.cpp
 )
 
-add_library(ArgumentCounter SHARED
-  ArgumentCounter/ArgumentCounter.cpp
-)
-
 add_library(StaticCallCounter SHARED  
   StaticCallCounter/StaticCallCounter.cpp
-)
-
-add_library(ObAnalysis SHARED
-  ObAnalysis/ObAnalysis.cpp
 )
 
 add_library(Utils SHARED
@@ -40,6 +55,7 @@ add_library(Matcher SHARED
 
 add_library(Instrumenter SHARED
   Instrument/AllocInstrumenter.cpp
+  Utils/LLVM.cpp
 )
 
 target_link_libraries(Instrumenter

@@ -138,6 +138,7 @@ if [ $with_runtime -eq 0 ]; then
 else
   # otherwise, we need to link with the library to produce the executable
   # here we are linking with static lib, which is less flexible but faster
+  $maybe clang $output_bc -o $output_exe -L $runtime_path -l:libOrbitTracker.a
   $maybe clang $output_bc -o $output_exe -L $runtime_path -l:libOrbitTracker.a 
   # another way is to link with the shared lib, which is flexible but slower
   # $maybe clang $output_bc -o $output_exe -L $runtime_path -lOrbitTracker 

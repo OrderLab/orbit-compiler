@@ -9,7 +9,7 @@
 //
 
 #ifndef _INSTRUMENT_ALLOC_PASS_H_
-#define _INSTRUMENT_ALLOC_RPASS_H_
+#define _INSTRUMENT_ALLOC_PASS_H_
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"

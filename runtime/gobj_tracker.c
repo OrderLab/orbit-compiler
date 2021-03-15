@@ -11,6 +11,8 @@
 FILE *__orbit_tracker_file;
 #define MAX_FILE_NAME_SIZE 64
 
+void *orbit_alloc(size_t size) { return malloc(size); }
+
 char *__orbit_tracker_file_name(char *buf) {
   snprintf(buf, 64, "orbit_gobj_pid_%d.dat", getpid());
   return buf;
@@ -44,7 +46,12 @@ void __orbit_gobj_tracker_init() {
 }
 
 inline void __orbit_track_gobj(char *addr, size_t size) {
-   fprintf(__orbit_tracker_file, "%zu => %p\n", size, addr);
+  fprintf(__orbit_tracker_file, "%zu => %p\n", size, addr);
+}
+
+inline void *__orbit_alloc_gobj(size_t size) {
+  printf("malloc call of size %d \n", size);
+  return orbit_alloc(size);
 }
 
 bool __orbit_gobj_tracker_dump() {

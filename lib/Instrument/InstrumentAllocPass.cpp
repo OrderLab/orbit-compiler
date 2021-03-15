@@ -41,7 +41,6 @@ bool InstrumentAllocPass::runOnModule(Module &M) {
 
 bool InstrumentAllocPass::runOnFunction(Function &F) {
   bool instrumented = false;
-  // TODO: replace this demo logic
   Instruction *instr;
   for (inst_iterator ii = inst_begin(F), ie = inst_end(F); ii != ie; ++ii) {
     instr = &*ii;
@@ -50,6 +49,6 @@ bool InstrumentAllocPass::runOnFunction(Function &F) {
   return instrumented;
 }
 
-char InstrumentAllocPass::ID = 0;
+char InstrumentAllocPass::ID = 2;
 static RegisterPass<InstrumentAllocPass> X(
     "instm", "Instruments allocation related code");

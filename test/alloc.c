@@ -6,8 +6,10 @@ struct item {
   struct item *next;
 };
 
-int * sum_items(struct item *head) {
-  int *sum = (int *) malloc(4);
+void *mem_heap_alloc(size_t size) { return malloc(size); }
+
+int *sum_items(struct item *head) {
+  int *sum = (int *)malloc(4);
   *sum = 0;
   struct item *p = head;
   while (p != NULL) {
@@ -18,17 +20,19 @@ int * sum_items(struct item *head) {
 }
 
 int foo(int data) {
-  struct item *item1 = (struct item *) malloc(sizeof(struct item));
+  struct item *item1 = (struct item *)mem_heap_alloc(sizeof(struct item));
   item1->value = data;
 
-  struct item *item2 = (struct item *) malloc(sizeof(struct item));
+  struct item *item2 = (struct item *)mem_heap_alloc(sizeof(struct item));
   item2->value = data * 2;
   item1->next = item2;
 
-  struct item *item3 = (struct item *) malloc(sizeof(struct item));
+  struct item *item3 = (struct item *)mem_heap_alloc(sizeof(struct item));
   item3->value = data * 3;
   item2->next = item3;
   item3->next = NULL;
+
+  struct item *item4 = (struct item *)mem_heap_alloc(sizeof(struct item));
 
   int *sum = sum_items(item1);
   int ret = *sum;
@@ -46,4 +50,3 @@ int main(void) {
   printf("foo(15)=%d\n", foo(15));
   printf("foo(20)=%d\n", foo(20));
 }
-

@@ -23,6 +23,7 @@ extern "C" {
 
 extern inline char *__orbit_tracker_file_name(char *buf);
 extern inline void __orbit_track_gobj(char *addr, size_t size);
+extern inline void *__orbit_alloc_gobj(size_t size);
 void __orbit_gobj_tracker_init();
 bool __orbit_gobj_tracker_dump();
 void __orbit_gobj_tracker_finish();
