@@ -14,6 +14,10 @@ add_library(StaticCallCounter SHARED
   StaticCallCounter/StaticCallCounter.cpp
 )
 
+add_library(ObAnalysis SHARED
+  ObAnalysis/ObAnalysis.cpp
+)
+
 add_library(Utils SHARED
   Utils/String.cpp
   Utils/Path.cpp

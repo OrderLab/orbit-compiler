@@ -13,7 +13,7 @@ all: $(EXES) $(BITCODES) $(ASSEMBLYS)
 	$(CC) $< -o $@
 
 %.bc: %.c
-	clang -c -g -O0 -emit-llvm $< -o $@
+	clang -c -g -O0 -emit-llvm -### $< -o $@
 
 %.ll: %.bc
 	llvm-dis $<

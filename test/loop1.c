@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static unsigned long mul(int);
+
 int foo(int c) {
   for (int i = 0; i < 10; i++) {
     for (int j = 0; j < 3; j++) {
@@ -40,6 +42,11 @@ int bar(int n) {
   else
     ret = n / 2;
   return ret;
+}
+
+void calls(int a, int b) {
+  bar(a);
+  mul(b);
 }
 
 int main(int argc, char *argv[]) {
