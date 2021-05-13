@@ -73,7 +73,7 @@ Below is an example of compiling MySQL for analysis.
 
 A. Download MySQL source code:
 
-MySQL - 5.5.59
+Replace 5.5.59 with 5.7.31 for MySQL 5.7.31
 
 ```
 $ mkdir -p target-sys/mysql-build
@@ -82,36 +82,18 @@ $ wget -nc https://downloads.mysql.com/archives/mysql-5.5/mysql-5.5.59.tar.gz
 $ tar xzvf mysql-5.5.59.tar.gz
 ```
 
-MySQL - 5.7.31
-
-```
-$ mkdir -p target-sys/mysql-build
-$ cd target-sys
-$ wget -nc https://downloads.mysql.com/archives/mysql-5.7/mysql-5.7.31.tar.gz
-$ tar xzvf mysql-5.7.31.tar.gz
-```
-
-
 B. Compile with `wllvm`:
 
-```
-$ cd mysql-build
-$ CC=wllvm CXX=wllvm++ cmake ../mysql-5.5.59 -DCMAKE_C_FLAGS_DEBUG="-g -O0" -DCMAKE_CXX_FLAGS_DEBUG="-g -O0" -DMYSQL_MAINTAINER_MODE=false
-$ make -j$(nproc)
-$ extract-bc sql/mysqld
-```
-
-MySQL - 5.7.31
+You also may need to install the Boost libraries and then include it with the `-DWITH_BOOST=<directory>` flag.
 
 ```
 $ cd mysql-build
 $ export LLVM_COMPILER=clang
-$ CC=wllvm CXX=wllvm++ cmake ../mysql-5.7.31 -DCMAKE_C_FLAGS_DEBUG="-g -O0" -DCMAKE_CXX_FLAGS_DEBUG="-g -O0" -DMYSQL_MAINTAINER_MODE=false
+$ CC=wllvm CXX=wllvm++ cmake ../mysql-5.5.59 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g -O0 -fno-inline-functions" -DCMAKE_CXX_FLAGS_DEBUG="-g -O0 -fno-inline-functions" -DMYSQL_MAINTAINER_MODE=false
 $ make -j$(nproc)
 $ extract-bc sql/mysqld
-
 ```
-TODO
+
 
 You should see a `mysqld.bc` in the `sql` directory (where the normal `mysqld` 
 executable resides). This bitcode file will be the target file for analysis 
@@ -197,19 +179,30 @@ which will change in different runs.
 
 #### Instrumenting MySQL
 
-Running ObiWanAnalysis
-TODO
-
+The output of the LLVM pass is a list of heap allocation functions that can reach the target function (`check_and_resolve`) along with the path taken
 ```
-opt -load lib/libObiWanAnalysisPass.so -obi-wan-analysis -target-functions DeadlockChecker::check_and_resolve < ../target-sys/mysql-build/sql/mysqld.bc > /dev/null
-```
-
-```
-clang deadlock-instrument.bc -o test-instrumented -L /home/ubuntu/orbit-compiler-temp/build/runtime -l:libOrbitTracker.a -lstdc++
+$ opt -load lib/libObiWanAnalysisPass.so -obi-wan-analysis -target-functions DeadlockChecker::check_and_resolve < ../target-sys/mysql-build/sql/mysqld.bc > /dev/null
+$ clang test-instrumented.bc -o test-instrumented -L /home/ubuntu/orbit-compiler-temp/build/runtime -l:libOrbitTracker.a -lstdc++
+$ ./test-instrumented
 ```
 
-#### Current Limitations
-TODO
+#### Discussion and Current Limitations
+* The target function `check_and_resolve` is provided as a user input. Ideally, the developer can specify the target through the use of the attribute `annotate`. There is some preprocessing required, however, before this annotation can be read directly in LLVM. This preprocessing is already performed in the function `addFunctionAttributes` in `ObiWanAnalysisPass`. 
+* Similarly, the heap allocation functions are currently manually specified. A better approach would be to use the `annotate` attribute with a different string.
+* Class Member Analysis: In certain cases, we have to chase the users of class member variables. This is more involved since LLVM does not support this out of the box. One approach this analysis takes is based on the fact that LLVM implements classes as structs. Struct variables are accessed via the `getElementPtr` instruction. Access to the same struct variables means that the `getElementPtr` instructions are similar (they may not be identical since the base address may not be the same). This is reflected in the function `isAccessingSameStructVar` in LLVM.cpp.
+This is currently only enabled for identifying the `trx_t` variable heap point since this extended analysis may be incorrect in some cases. I have not tested this extensively and it may produce incorrect results.
+* In certain cases, the path cannot be printed out even if the analysis discovers a path. This is slightly tricky since there may be sub problems to tackle
+    * Global Variables: Global variables have users which span across functions and thus the current directed graph approach to find the path would not work
+    * Class Member Analysis: Currently class member analysis is performed by identifying access to the same class fields via the `getElementPtr` instruction. However, this analysis does not work for the directed graph search
+
+#### Useful References
+I referred to the following for understanding and implementation:
+1. https://releases.llvm.org/5.0.1/docs/LangRef.html
+2. https://releases.llvm.org/5.0.1/docs/ProgrammersManual.html
+3. https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/en/latest/README.html#
+4. https://llvm.org/docs/GetElementPtr.html
+5. https://blog.yossarian.net/2020/09/19/LLVMs-getelementptr-by-example
+6. LLVM 5.0 Doxygen: This is not hosted but it can be downloaded from https://releases.llvm.org/download.html
 
 ## Code Styles
 

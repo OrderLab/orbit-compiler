@@ -146,7 +146,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     return true;
   }
 
-  // TODO: Adds function attributes - currently not used
+  // Adds function attributes - currently not used
   // Reference:
   // http://web.archive.org/web/20160306050809/http://homes.cs.washington.edu/~bholt/posts/llvm-quick-tricks.html
   void addFunctionAttributes(Module &M) {
