@@ -164,6 +164,10 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
   // Process Value
   if (StoreInst *store = dyn_cast<StoreInst>(elem)) {
     insertElement(store->getOperand(1), walk);
+    insertElement(store->getOperand(0), walk);
+  }
+  if (LoadInst *load = dyn_cast<LoadInst>(elem)) {
+    insertElement(load->getOperand(0), walk);
   }
   // FIXME: add pointer chain info
   if (GetElementPtrInst *getelem = dyn_cast<GetElementPtrInst>(elem)) {
@@ -174,6 +178,25 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
     } else {
       insertElement(getelem->getOperand(0), walk);
     }
+  }
+
+  // Modification to an argument
+  if (Argument *arg = dyn_cast<Argument>(elem)) {
+    // Must be a pointer argument
+    if (!arg->getType()->isPointerTy()) return;
+    if (DBG) errs() << "Is an argument\n";
+    Function *fun = arg->getParent();
+    if (DBG) errs() << "    function is:\n" << *fun << "    function end\n";
+    for (Value *call : fun->users()) {
+      if (isa<CallInst>(call) || isa<InvokeInst>(call)) {
+        if (DBG) errs() << "    function user: " << *call << '\n';
+        if (DBG) errs() << "    function arg: " << arg->getArgNo()
+          << " user: " << *CallSite(call).getArgOperand(arg->getArgNo()) << '\n';
+        Value *user = CallSite(call).getArgOperand(arg->getArgNo());
+        insertElement(user, walk);
+      }
+    }
+    // TODO: function pointer data flow
   }
 
   if (ReturnInst *ret = dyn_cast<ReturnInst>(elem)) {
@@ -187,8 +210,9 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
       Function *fun = ret->getFunction();
       for (auto user : fun->users()) {
         if (Instruction *ins = dyn_cast<Instruction>(user)) {
-          if (isIncompatibleFun(ins->getFunction())) continue;
-          callGraph->addEdge(ret->getFunction(), ins->getFunction());
+          Function *caller = ins->getFunction();
+          if (isIncompatibleFun(caller)) continue;
+          callGraph->addEdge(fun, caller);
         }
         insertElement(user, walk);
       }
