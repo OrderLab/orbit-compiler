@@ -50,20 +50,22 @@ class UserGraph {
   typedef std::vector<UserNode> UserNodeList;
   typedef UserNodeList::iterator iterator;
   typedef UserNodeList::const_iterator const_iterator;
-  typedef SmallPtrSet<Value *, 8> VistedNodeSet;
-  typedef std::queue<Optional<Value *>> VisitQueue;
+  typedef SmallPtrSet<Value *, 8> VisitedNodeSet;
+  typedef std::queue<Value *> VisitQueue;
   typedef std::stack<Value *> VisitStack;
   typedef std::unordered_map<Function *, std::set<Type *>> FunctionSet;
   typedef std::unordered_map<Instruction *, std::vector<Instruction *>>
       ReturnCallMap;
 
-  UserGraph(Value *v, CallGraph *cg, Function *targ, bool memberAnalysis,
-            UserGraphWalkType t = UserGraphWalkType::DFS, int depth = -1) {
-    root = v;
-    maxDepth = depth;
-    callGraph = cg;
-    target = targ;
-    this->memberAnalysis = memberAnalysis;
+  UserGraph(Value *v, CallGraph *cg, Function *target, bool memberAnalysis, Module &M,
+            int depth = -1)
+    : functionsVisited(),
+      root(v), maxDepth(depth), callGraph(cg), target(target), M(M),
+      memberAnalysis(memberAnalysis)
+  {}
+  ~UserGraph() {}
+
+  void run(UserGraphWalkType t = UserGraphWalkType::DFS) {
     if (t == UserGraphWalkType::DFS)
       doDFS();
     else
@@ -79,6 +81,7 @@ class UserGraph {
   FunctionSet::iterator func_end() { return functionsVisited.end(); }
 
   bool isFunctionVisited(Function *);
+  bool functionGlobalVarVisited(Function *fun);
   void printCallSite();
 
  protected:
@@ -97,14 +100,15 @@ class UserGraph {
   std::vector<Function *> funVector;
 
  private:
-  int maxDepth;
   Value *root;
+  int maxDepth;
   UserNodeList userList;
-  VistedNodeSet visited;
+  VisitedNodeSet visited;
   VisitQueue visit_queue;
   VisitStack visit_stack;
   CallGraph *callGraph;
   Function *target;
+  Module &M;
   ReturnCallMap returnCallMap;
   bool memberAnalysis;
 };

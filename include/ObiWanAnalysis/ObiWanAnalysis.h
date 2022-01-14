@@ -20,14 +20,16 @@ using namespace defuse;
 
 class ObiWanAnalysis {
  private:
-  CallGraph *callGraph;
+  CallGraph callGraph;
   Value *root;      // llvm Value to track
   Function *start;  // heap allocation's parent function
   Function *end;    // target function (eg: check_and_resolve)
-  UserGraph *ug;
+  UserGraph ug;
+  Optional<bool> calcIsAllocationPoint;
 
  public:
-  ObiWanAnalysis(Value *root, Function *start, Function *end);
+  ObiWanAnalysis(Value *root, Function *start, Function *end, Module &M);
+  ~ObiWanAnalysis() {};
   bool isAllocationPoint();
   void performDefUse();
 };

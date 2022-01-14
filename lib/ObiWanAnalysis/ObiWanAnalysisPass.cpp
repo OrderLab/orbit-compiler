@@ -40,8 +40,17 @@ static cl::list<std::string> TargetFunctions("target-functions",
 struct ObiWanAnalysisPass : public llvm::ModulePass {
   static char ID;
   // TODO: Fix
+  /* std::set<std::string> ignoreFunctions{
+    "mem_heap_alloc", "mem_heap_zalloc", "mem_heap_create_block_func",
+  }; */
   std::set<std::string> heapAllocFunctions{
-      "mem_heap_alloc", "ut_allocator<unsigned char>::allocate"};
+    "malloc", "calloc", "realloc",
+    "mem_heap_alloc", "mem_heap_zalloc", "mem_heap_create_func", "mem_heap_create_block_func",
+    "ut_allocator<unsigned char>::allocate",
+    "zmalloc", "zcalloc", "zrealloc", "zstrdup",
+    "ngx_pcalloc", "ngx_palloc", "ngx_alloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
+    "apr_pcalloc", "apr_palloc",
+  };
   std::vector<Instruction *> heapCalls;
 
   ObiWanAnalysisPass() : llvm::ModulePass(ID) {}
@@ -68,11 +77,17 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
 
       for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
         Function &F = *I;
-        if (!F.isDeclaration()) {
-          modified |= identifyHeapAlloc(F, targetFun);
+        if (!F.isDeclaration() &&
+            heapAllocFunctions.find(demangleName(F.getName())) == heapAllocFunctions.end())
+        {
+          modified |= identifyHeapAlloc(F, targetFun, M);
         }
       }
     }
+
+    errs() << "Found heapCalls " << heapCalls.size() << "\n";
+
+    return false;
 
     if (heapCalls.size() == 0) return false;
 
@@ -109,7 +124,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     return instrumenter->instrumentInstr(inst);
   }
 
-  bool identifyHeapAlloc(Function &F, Function *targetFun) {
+  bool identifyHeapAlloc(Function &F, Function *targetFun, Module &M) {
     if (F.isDeclaration() || F.isIntrinsic()) return false;
     std::string demangled = demangleFunctionName(&F);
 
@@ -120,11 +135,10 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
       CallSite cs(inst);
       if (cs.isCall() || cs.isInvoke()) {
         Function *calledFun = cs.getCalledFunction();
-        Function *callSite = inst->getFunction();
-        if (calledFun == NULL || callSite == NULL) continue;
+        if (calledFun == NULL) continue;
         std::string calledName = demangleName(calledFun->getName());
         if (heapAllocFunctions.find(calledName) != heapAllocFunctions.end()) {
-          ObiWanAnalysis ob(inst, callSite, targetFun);
+          ObiWanAnalysis ob(inst, &F, targetFun, M);
           ob.performDefUse();
           if (ob.isAllocationPoint()) {
             heapCalls.push_back(inst);
@@ -153,7 +167,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     auto global_annos = M.getNamedGlobal("llvm.global.annotations");
     if (global_annos) {
       auto a = cast<ConstantArray>(global_annos->getOperand(0));
-      for (int i = 0; i < a->getNumOperands(); i++) {
+      for (unsigned i = 0; i < a->getNumOperands(); i++) {
         auto e = cast<ConstantStruct>(a->getOperand(i));
 
         if (auto fn = dyn_cast<Function>(e->getOperand(0)->getOperand(0))) {

@@ -39,8 +39,8 @@ std::string demangleName(std::string mangledName) {
   const char *mangled = mangledName.c_str();
   char *buffer = (char *)malloc(strlen(mangled));
   size_t length = strlen(mangled);
-  int *status = nullptr;
-  char *demangled = itaniumDemangle(mangled, buffer, &length, status);
+  int status;
+  char *demangled = itaniumDemangle(mangled, buffer, &length, &status);
 
   if (demangled != NULL) {
     std::string str(demangled);
@@ -49,7 +49,8 @@ std::string demangleName(std::string mangledName) {
     free(demangled);
     return str.substr(0, pos);
   }
-  return "";
+  free(demangled);
+  return mangledName;
 }
 
 std::string demangleFunctionName(Function *fun) {
@@ -77,7 +78,12 @@ Function *getFunctionWithName(std::string name, Module &M) {
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
     Function &F = *I;
     std::string demangled = demangleName(F.getName());
-    if (demangled.rfind(name, 0) == 0) return &F;
+    // Search for exact match, but truncate parameters including parenthesis.
+    size_t pos = demangled.find('(');
+    if (pos != std::string::npos)
+      demangled.resize(pos);
+    if (demangled == name)
+      return &F;
   }
   return NULL;
 }
@@ -90,6 +96,7 @@ std::vector<Function *> getFunctionsWithType(Type *type, Module &M) {
     Function &F = *I;
     if (F.arg_size() == 0) continue;
     Argument *arg = F.arg_begin();
+    // TODO: not considering inheritance
     if (arg->getType() == type) funs.push_back(&F);
   }
   return funs;

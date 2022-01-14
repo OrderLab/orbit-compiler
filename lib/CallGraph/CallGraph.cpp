@@ -23,15 +23,13 @@ void CallGraph::addEdge(Function *caller, Function *callee) {
 void CallGraph::printPath(Function *source, Function *destination) {
   Path path = findPath(source, destination);
   if (path.size() == 0) {
-    errs() << "No path found"
-           << "\n";
+    errs() << "No path found\n";
   } else {
     for (auto it = path.begin(); it != path.end(); it++) {
       errs() << demangleName((*it)->getName()) << "->";
     }
     errs() << "\n";
   }
-  errs() << "\n";
 }
 
 CallGraph::Path CallGraph::findPath(Function *source, Function *destination) {

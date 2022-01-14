@@ -8,22 +8,24 @@
 
 #include "ObiWanAnalysis/ObiWanAnalysis.h"
 
-ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end) {
-  this->start = start;
-  this->end = end;
-  this->root = root;
-  this->callGraph = new CallGraph();
-}
+ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end, Module &M)
+  : callGraph(), root(root), start(start), end(end),
+    ug(root, &callGraph, end, isConstructor(root), M), calcIsAllocationPoint()
+{}
 
 void ObiWanAnalysis::performDefUse() {
-  if (isConstructor(root)) {
-    ug = new UserGraph(root, callGraph, end, true, UserGraphWalkType::BFS);
-  } else {
-    ug = new UserGraph(root, callGraph, end, false, UserGraphWalkType::BFS);
-  }
-  if (!ug->isFunctionVisited(end)) return;
+  ug.run(UserGraphWalkType::BFS);
+
+  if (!isAllocationPoint()) return;
   printCallSite(root);
-  callGraph->printPath(start, end);
+  // callGraph.printPath(start, end);
+  errs() << '\n';
 }
 
-bool ObiWanAnalysis::isAllocationPoint() { return ug->isFunctionVisited(end); }
+bool ObiWanAnalysis::isAllocationPoint() {
+  if (!calcIsAllocationPoint.hasValue()) {
+    calcIsAllocationPoint =
+      ug.isFunctionVisited(end) || ug.functionGlobalVarVisited(end);
+  }
+  return calcIsAllocationPoint.getValue();
+}
