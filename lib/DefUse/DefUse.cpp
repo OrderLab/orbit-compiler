@@ -149,6 +149,9 @@ void UserGraph::doBFS() {
   }
 }
 
+/*
+ * Search for dst if it is src, and search for dst if it is src.
+ */
 void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
   // bool DBG = true;
   if (DBG) errs() << " === begin process user === : " << *elem << '\n';
@@ -159,26 +162,39 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
     functionsVisited[fun].insert(type);
   }
 
+  if (DBG) errs() << "    inst: " << *elem << '\n';
+
   // TODO: Move Constant handling from insert to here
 
-  // Process Value
-  if (StoreInst *store = dyn_cast<StoreInst>(elem)) {
-    insertElement(store->getOperand(1), walk);
-    insertElement(store->getOperand(0), walk);
+  // We would not expect store instruction could have a user
+  if (isa<StoreInst>(elem)) {
+    errs() << "Unexpected store instruction! : " << *elem << '\n';
+    return;
+  }
+
+  /*
+   * As dst, find src (find definition, i.e. find data flow to this var)
+   *
+   * For GEP, find definition of operand that was added by offset. Add offset
+   * to the chain. If the offset is variable, consider it as array.
+   *
+   * For Load, find definition of src operand. Add deref to the chain.
+   *
+   * One exception is that src finding for StoreInst is merged into the
+   * following loop, only if it was the src operand. Then add dst and add
+   * deref to the chain.
+   */
+  if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(elem)) {
+    // TODO: add pointer chain info
+    insertElement(gep->getOperand(0), walk);
   }
   if (LoadInst *load = dyn_cast<LoadInst>(elem)) {
+    // TODO: add pointer chain info
     insertElement(load->getOperand(0), walk);
   }
-  // FIXME: add pointer chain info
-  if (GetElementPtrInst *getelem = dyn_cast<GetElementPtrInst>(elem)) {
-    if (DBG) errs() << "    operand is: " << *getelem->getOperand(0) << '\n';
+  // TODO: case for global variable
+  // TODO: case for argument
 
-    if (LoadInst *load = dyn_cast<LoadInst>(getelem->getOperand(0))) {
-      insertElement(load->getOperand(0), walk);
-    } else {
-      insertElement(getelem->getOperand(0), walk);
-    }
-  }
 
   // Modification to an argument
   if (Argument *arg = dyn_cast<Argument>(elem)) {
@@ -202,9 +218,7 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
   if (ReturnInst *ret = dyn_cast<ReturnInst>(elem)) {
     if (returnCallMap.count(ret) != 0) {
       for (auto inst : returnCallMap[ret]) {
-        // We have already inserted the call/Invoke Instruction, we need to
-        // insert it's users when returning
-        insertElementUsers(inst, walk);
+        insertElement(inst, walk);
       }
     } else {
       Function *fun = ret->getFunction();
@@ -214,86 +228,105 @@ void UserGraph::processUser(Value *elem, UserGraphWalkType walk) {
           if (isIncompatibleFun(caller)) continue;
           callGraph->addEdge(fun, caller);
         }
+        // TODO: handle pointer passing: add pointer to data flow analysis
         insertElement(user, walk);
       }
     }
   }
-  if (false || memberAnalysis) {
-    processGetElementPtr(elem, walk);
-  }
 
-  // Process Value users
-  for (auto ui : elem->users()) {
-    Instruction *ii = dyn_cast<Instruction>(ui);
-    // TODO: add arguments modification to data flow analysis
-    if (isa<CallInst>(ui) || isa<InvokeInst>(ui)) {
-      // For newer LLVM, cast to Callbase
-      CallSite callInst = CallSite(ui);
-      // Call Instruction - need to save argument if one exists
+  // TODO: PtrToIntInst, IntToPtrInst
 
-      // Edge Case: If there are no operands then we are not using elem in the
-      // call instruction We can directly add callInst to the queue/stack since
-      // we are still interested in the return value
-      if (callInst.getNumArgOperands() == 0) {
-        Function *caller = callInst->getFunction();
-        Function *callee = callInst.getCalledFunction();
-        callGraph->addEdge(caller, callee);
-        insertElement(ui, walk);
-        continue;
-      }
-      unsigned int arg_no;
-      for (arg_no = 0; arg_no < callInst.getNumArgOperands(); arg_no++) {
-        if (callInst.getArgOperand(arg_no) == elem) break;
-      }
-      Function *caller = callInst->getFunction();
-      Function *callee = callInst.getCalledFunction();
-      if (callee && demangleName(callee->getName()) == "pthread_create" && arg_no == 3) {
-        if (DBG) errs() << callInst.getArgOperand(2)->getName() << '\n';
-        callee = getFunctionWithName(demangleName(callInst.getArgOperand(2)->getName()), M);
-        arg_no -= 3;
-      }
 
-      if (isIncompatibleFun(callee) || callee->isVarArg()) continue;
-      callGraph->addEdge(caller, callee);
-      Argument *arg = callee->arg_begin() + arg_no;
-      insertElement(arg, walk);
-
-      for (inst_iterator I = inst_begin(callee), E = inst_end(callee); I != E;
-           ++I) {
-        if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&*I)) {
-          returnCallMap[returnInst].push_back(ii);
-        }
+  /*
+   * As src, find dst (find out-degree data flow)
+   *
+   * In general, add LHS to the search, only if it matches the field chain.
+   * For those user that deref to the root, mark its function as usage point.
+   * ^TODO
+   *
+   * One exception is that src finding for StoreInst is merged into this loop.
+   */
+  for (User *user : elem->users()) {
+    if (DBG) errs() << "    user: " << *user << '\n';
+    if (StoreInst *store = dyn_cast<StoreInst>(user)) {
+      if (elem == store->getOperand(0)) {
+        // If it was the src operand, search for definition of dst, add deref
+        // to the chain.
+        // TODO
+        insertElement(store->getOperand(1), walk);
+      } else {
+        // If it was the dst operand, search for usage of src, remove one
+        // deref from chain.
+        // TODO
+        insertElement(store->getOperand(0), walk);
       }
+    } else if (isa<LoadInst>(user)) {
+      // TODO
+      insertElement(user, walk);
+    } else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(user)) {
+      // TODO
+      insertElement(user, walk);
+    } else if (ExtractValueInst *val = dyn_cast<ExtractValueInst>(user)) {
+      // TODO
+      insertElement(user, walk);
+    } else if (InsertValueInst *val = dyn_cast<InsertValueInst>(user)) {
+      // TODO
+      insertElement(user, walk);
+    } else if (isa<CallInst>(user) || isa<InvokeInst>(user)) {
+      // TODO
+      processCall(CallSite(user), elem, walk);
+    } else if (isa<BitCastInst>(user)) {
+      insertElement(user, walk);
+    } else if (isa<ReturnInst>(user)) {
+      insertElement(user, walk);
     } else {
-      insertElement(ui, walk);
+      if (isa<Instruction>(user)) {
+        // Things to pass as-is: ternary operators
+        if (isa<PHINode>(user) || isa<SelectInst>(user)) {
+          insertElement(user, walk);
+        }
+        // Things to ignore:
+        // - other binary operations and other cast operations (currently
+        //   we don't support pointer arithmetics)
+        // - cmp operations & control flow operations (no data flow)
+        else if (isa<BinaryOperator>(user) || isa<CastInst>(user) ||
+                 isa<CmpInst>(user) || isa<TerminatorInst>(user)) {
+          // Just ignore it
+        } else {
+          errs() << "Unsupported Instruction: " << *user << '\n';
+        }
+      } else if (isa<Constant>(user)) {
+        errs() << "TODO: constexpr: " << *user << "\n";
+      } else {
+        errs() << "Unsupported user: " << *user << '\n';
+      }
     }
   }
 }
 
-void UserGraph::processGetElementPtr(Value *elem, UserGraphWalkType walk) {
-  if (GetElementPtrInst *getInst1 = dyn_cast<GetElementPtrInst>(elem)) {
-    Function *curr = getInst1->getFunction();
-    std::string name = demangleName(curr->getName());
-    if (curr->arg_size() == 0) return;
-    if (name.rfind("Pool", 0) == 0 || name.rfind("ha_innobase", 0) == 0 ||
-        name.rfind("create_table_info_t", 0) == 0) {
-      Argument *arg = curr->arg_begin();
-      Module *mod = curr->getParent();
-      auto funs = getFunctionsWithType(arg->getType(), *mod);
-      for (auto fun : funs) {
-        for (inst_iterator I = inst_begin(fun), E = inst_end(fun); I != E;
-             ++I) {
-          Instruction *inst = &*I;
-          if (GetElementPtrInst *getInst2 = dyn_cast<GetElementPtrInst>(inst)) {
-            if (isAccessingSameStructVar(getInst1, getInst2)) {
-              if (isIncompatibleFun(getInst2->getFunction())) return;
-              callGraph->addEdge(getInst1->getFunction(),
-                                 getInst2->getFunction());
-              insertElement(getInst2, walk);
-            }
-          }
-        }
-      }
+void UserGraph::processCall(CallSite call, Value *arg, UserGraphWalkType walk) {
+  Instruction *inst = call.getInstruction();
+  unsigned int arg_no;
+  for (arg_no = 0; arg_no < call.getNumArgOperands(); arg_no++) {
+    if (call.getArgOperand(arg_no) == arg) break;
+  }
+  Function *caller = call->getFunction();
+  Function *callee = call.getCalledFunction();
+  if (callee && demangleName(callee->getName()) == "pthread_create" && arg_no == 3) {
+    if (DBG) errs() << call.getArgOperand(2)->getName() << '\n';
+    callee = getFunctionWithName(demangleName(call.getArgOperand(2)->getName()), M);
+    arg_no -= 3;
+  }
+
+  if (isIncompatibleFun(callee) || callee->isVarArg()) return;
+  callGraph->addEdge(caller, callee);
+  Argument *passed_arg = callee->arg_begin() + arg_no;
+  insertElement(passed_arg, walk);
+
+  for (inst_iterator I = inst_begin(callee), E = inst_end(callee); I != E;
+      ++I) {
+    if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&*I)) {
+      returnCallMap[returnInst].push_back(inst);
     }
   }
 }

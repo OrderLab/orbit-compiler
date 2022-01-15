@@ -46,6 +46,18 @@ enum class UserGraphWalkType { BFS, DFS };
 // the transitive closure of users' users etc.
 class UserGraph {
  public:
+  struct FieldChainElem {
+    // special offset to indicate array element
+    const ssize_t ARRAY_FIELD = LONG_MAX;
+
+    enum class type { offset, deref, call };
+    union {
+      struct { Type *type; ssize_t offset; } offset;
+      struct { Function *fun; size_t arg_no; } call;
+    };
+    std::shared_ptr<FieldChainElem> next;
+  };
+  typedef std::shared_ptr<FieldChainElem> FieldChain;
   typedef std::pair<Value *, int> UserNode;
   typedef std::vector<UserNode> UserNodeList;
   typedef UserNodeList::iterator iterator;
@@ -91,7 +103,7 @@ class UserGraph {
  private:
   bool isIncompatibleFun(Function *fun);
   void processUser(Value *elem, UserGraphWalkType walk);
-  void processGetElementPtr(Value *elem, UserGraphWalkType walk);
+  void processCall(CallSite call, Value *arg, UserGraphWalkType walk);
   void insertElement(Value *elem, UserGraphWalkType walk);
   void insertElementUsers(Value *elem, UserGraphWalkType walk);
 
