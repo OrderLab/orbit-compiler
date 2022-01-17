@@ -50,7 +50,8 @@ class CallGraph {
  private:
   Path findPath(Function *source, Function *destination);
 
- private:
+ public:
+  // TODO: add more detailed information and API for lookup
   Graph callGraph;
 };
 

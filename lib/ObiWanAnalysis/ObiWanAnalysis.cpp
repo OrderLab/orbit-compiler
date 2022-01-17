@@ -18,14 +18,12 @@ void ObiWanAnalysis::performDefUse() {
 
   if (!isAllocationPoint()) return;
   printCallSite(root);
-  // callGraph.printPath(start, end);
+  callGraph.printPath(start, end);
   errs() << '\n';
 }
 
 bool ObiWanAnalysis::isAllocationPoint() {
-  if (!calcIsAllocationPoint.hasValue()) {
-    calcIsAllocationPoint =
-      ug.isFunctionVisited(end) || ug.functionGlobalVarVisited(end);
-  }
+  if (!calcIsAllocationPoint.hasValue())
+    calcIsAllocationPoint = ug.isFunctionVisited(end) && ug.functionGlobalVarVisited(end);
   return calcIsAllocationPoint.getValue();
 }
