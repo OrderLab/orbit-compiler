@@ -1,8 +1,4 @@
-*.bc
-*.ll
-simple
-loop1
-alloc
-linked
-field-sensitive
-modify
+*
+!*.c
+!*.cpp
+!Makefile

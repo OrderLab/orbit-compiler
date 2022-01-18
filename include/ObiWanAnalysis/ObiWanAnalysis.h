@@ -28,7 +28,8 @@ class ObiWanAnalysis {
   Optional<bool> calcIsAllocationPoint;
 
  public:
-  ObiWanAnalysis(Value *root, Function *start, Function *end, Module &M);
+  ObiWanAnalysis(Value *root, Function *start, Function *end,
+      const std::set<std::string> &alloc_funcs);
   ~ObiWanAnalysis() {};
   bool isAllocationPoint();
   void performDefUse();

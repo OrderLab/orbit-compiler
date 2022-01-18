@@ -11,6 +11,7 @@
 //
 
 #include "Utils/LLVM.h"
+#include "llvm/IR/Constants.h"
 
 using namespace std;
 using namespace llvm;
@@ -129,4 +130,58 @@ void printCallSite(Value *val) {
          << "Line: " << debugLocation->getLine() << "\n"
          << "Column: " << debugLocation->getColumn() << "\n"
          << "Return Type: " << *(ins->getFunction()->getReturnType()) << "\n";
+}
+
+// TODO: change this to resolveCallee
+std::tuple<Function *, Function *, unsigned>
+extractCallerCallee(CallSite call, unsigned arg_no) {
+  Function *caller = call.getCaller();
+  Function *callee = call.getCalledFunction();
+  Value *called_value = nullptr;
+
+  // If it is an indirect call, try to extract the callee
+  if (!callee) {
+    called_value = call.getCalledValue();
+  } else if (demangleName(callee->getName()) == "pthread_create" && arg_no == 3) {
+    // reset callee so we will not search into pthread_create
+    callee = nullptr;
+    called_value = call.getArgOperand(2);
+    arg_no -= 3;
+  } else {
+    // Do nothing
+  }
+
+  // We need to extract the actual callee
+  if (called_value) {
+    if (ConstantExpr *expr = dyn_cast<ConstantExpr>(called_value)) {
+      // First case: simple function pointer cast
+      if (Function *fun = dyn_cast<Function>(expr->stripPointerCasts())) {
+        callee = fun;
+      } else {
+        errs() << "Unknown function call to : " << *expr << '\n'
+          << " opcode name: " << expr->getOpcodeName() << " op0: " << *expr->getOperand(0) << '\n';
+      }
+    } else {
+      // TODO: Second case: probably a `load`ed value, try match the chain
+    }
+  }
+  return {caller, callee, arg_no};
+}
+
+Constant *stripBitCastsAndAlias(Constant *c) {
+  if (!c) return nullptr;
+  do {
+    if (ConstantExpr *expr = dyn_cast<ConstantExpr>(c)) {
+      if (expr->getOpcode() == Instruction::BitCast) {
+        c = expr->getOperand(0);
+      } else {
+        break;
+      }
+    } else if (GlobalAlias *alias = dyn_cast<GlobalAlias>(c)) {
+      c = alias->getAliasee();
+    } else {
+      break;
+    }
+  } while (true);
+  return c;
 }

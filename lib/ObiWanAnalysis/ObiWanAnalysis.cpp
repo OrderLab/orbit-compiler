@@ -8,9 +8,11 @@
 
 #include "ObiWanAnalysis/ObiWanAnalysis.h"
 
-ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end, Module &M)
+ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end,
+    const std::set<std::string> &alloc_funcs)
   : callGraph(), root(root), start(start), end(end),
-    ug(root, &callGraph, end, isConstructor(root), M), calcIsAllocationPoint()
+    ug(root, &callGraph, end, isConstructor(root), alloc_funcs),
+    calcIsAllocationPoint()
 {}
 
 void ObiWanAnalysis::performDefUse() {
@@ -18,12 +20,13 @@ void ObiWanAnalysis::performDefUse() {
 
   if (!isAllocationPoint()) return;
   printCallSite(root);
-  callGraph.printPath(start, end);
+  // callGraph.printPath(start, end);
   errs() << '\n';
 }
 
 bool ObiWanAnalysis::isAllocationPoint() {
   if (!calcIsAllocationPoint.hasValue())
     calcIsAllocationPoint = ug.isFunctionVisited(end) && ug.functionGlobalVarVisited(end);
+    // calcIsAllocationPoint = ug.functionGlobalVarVisited(end);
   return calcIsAllocationPoint.getValue();
 }

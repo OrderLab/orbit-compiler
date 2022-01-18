@@ -18,8 +18,8 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::defuse;
 
-const bool DBG = false;
 // const bool DBG = true;
+const bool DBG = false;
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
@@ -90,8 +90,8 @@ static bool functionGlobalVarVisitedHelper(
     DBG = true; */
   if (DBG) errs() << " === begin global var check === : " << fun->getName() << '\n';
 
-  for (inst_iterator I = inst_begin(fun), E = inst_end(fun); I != E; ++I) {
-    Instruction *inst = &*I;
+  for (auto &I : instructions(fun)) {
+    Instruction *inst = &I;
 
     if (hitPoints.find(inst) != hitPoints.end()) {
       errs() << "Is a hit point\n";
@@ -268,6 +268,8 @@ Optional<FieldChain> nest_gep(FieldChain chain, GetElementPtrInst *gep) {
  */
 Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *hit) {
   const unsigned operands = gep->getNumOperands();
+  bool dummy_hit;
+  if (!hit) hit = &dummy_hit;
   *hit = false;
   if (unlikely(operands <= 1)) {
     errs() << "Invalid GEP instruction: " << *gep << '\n';
@@ -297,7 +299,7 @@ Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *h
   } else {
     // It may be a variable. We allow either const or var, as long as it is
     // offset type on the chain.
-    return None;
+    // return None;
     if (chain->type != FieldChainElem::type::offset)
       return None;
     // This may be a variable, allow arbitrary array offset
@@ -320,8 +322,8 @@ Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *h
         return None;
       }
     } else {
-      return None;
-      // chain = chain->next;
+      // return None;
+      chain = chain->next;
       // errs() << "Field pointer not supported: " << *gep << "\n";
       // return None;
     }
@@ -345,7 +347,8 @@ Optional<FieldChain> match_deref(FieldChain chain) {
  */
 void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType walk) {
   // bool DBG = true;
-  if (DBG) errs() << " === begin process user === : " << *elem << '\n';
+  if (DBG) errs() << " === begin process user === : " << *elem << '\n'
+                  << "               chain is === : " << chain << '\n';
   if (Instruction *ins = dyn_cast<Instruction>(elem)) {
     Function *fun = ins->getFunction();
     if (DBG) errs() << " func : " << fun->getName() << '\n';
@@ -380,9 +383,48 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
   } else if (LoadInst *load = dyn_cast<LoadInst>(elem)) {
     insertElement(load->getOperand(0), chain.nest_deref(), walk);
   }
-  // TODO: case for global variable
+  // We can also trace the src of pointer cast
+  else if (BitCastInst *cast = dyn_cast<BitCastInst>(elem)) {
+    insertElement(cast->getOperand(0), chain, walk);
+  }
+  // Constant variable that may contain a global variable or function pointer
   else if (Constant *val = dyn_cast<Constant>(elem)) {
-    // TODO
+    // Ignore constants except for global variable, so that we will not
+    // reference `ret 0` from one function to another.
+    // Users of global variable will be added to 
+
+    // We are not interested in bitcast
+    val = stripBitCastsAndAlias(val);
+
+    // Special case: global variable is used as an operand
+    // TODO: add field allocation chain for usage check
+    if (ConstantExpr *expr = dyn_cast<ConstantExpr>(val)) {
+      if (expr->getOpcode() == Instruction::GetElementPtr &&
+          isa<GlobalVariable>(expr->getOperand(0)))
+      {
+        auto *gep = dyn_cast<GetElementPtrInst>(expr->getAsInstruction());
+        auto newchain = nest_gep(chain, gep);
+        delete gep;
+        if (newchain.hasValue())
+          insertElement(expr->getOperand(0), newchain.getValue(), walk);
+      } else {
+        // Unsupported global var usage
+        return;
+      }
+    } else if (Function *fun = dyn_cast<Function>(val)) {
+      // TODO: add function pointer into data flow analysis
+      return;
+      /* auto newchain = match_call(chain, fun);
+      if (newchain.hasValue()) {
+        if (newchain.getValue().get() == nullptr)
+          addHitPoint(load);
+      } */
+    } else if (isa<GlobalVariable>(val)) {
+      // Do nothing, fall to search for users
+    } else {
+      // Other (ConstantData, etc.), ignore and don't find users
+      return;
+    }
   }
   // Modification reaches to an argument
   else if (Argument *arg = dyn_cast<Argument>(elem)) {
@@ -396,35 +438,59 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
     if (callee != callGraph->callGraph.end()) {
       for (auto caller : callee->second) {
         if (caller->edgeType == EdgeType::RETURN) {
+          if (DBG) {
+            errs() << "callee " << fun->getName()
+              << " has caller: " << caller->dst->getName() << '\n';
+          }
           has_caller = true;
           break;
         }
       }
     }
+    auto is_caller = [this, callee](Function *fun) {
+      if (callee != callGraph->callGraph.end()) {
+        for (auto caller : callee->second) {
+          if (caller->edgeType == EdgeType::RETURN && caller->dst == fun)
+            return true;
+        }
+      }
+      return false;
+    };
     // TODO simplify this duplicated
     if (DBG) errs() << "    function name is: " << fun->getName() << "\n";
     for (User *call : fun->users()) {
+      if (DBG) errs() << "    function user is: " << *call << "\n";
       if (isa<CallInst>(call) || isa<InvokeInst>(call)) {
+        CallSite call_site(call);
+        Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
         // If not previous caller, continue
-        if (has_caller && visited.find(call) == visited.end())
+        if (has_caller &&
+            !is_caller(call_site.getCaller())
+            // visited.find(call) == visited.end()
+            // functionsVisited.find(call_site.getCaller()) == functionsVisited.end()
+            )
           continue;
         if (DBG) errs() << "    function user: " << *call << '\n';
         if (DBG) errs() << "    function arg: " << arg->getArgNo()
-          << " user: " << *CallSite(call).getArgOperand(arg->getArgNo()) << '\n';
-        Value *user = CallSite(call).getArgOperand(arg->getArgNo());
-        insertElement(user, chain, walk);
+          << " user: " << *caller_arg << '\n';
+        insertElement(caller_arg, chain, walk);
       } else if (ConstantExpr *c = dyn_cast<ConstantExpr>(call)) {
         if (c->getOpcode() == Instruction::BitCast) {
           for (User *call : c->users()) {
             if (isa<CallInst>(call) || isa<InvokeInst>(call)) {
+              CallSite call_site(call);
+              Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
               // If not previous caller, continue
-              if (has_caller && visited.find(call) == visited.end())
+              if (has_caller &&
+                  !is_caller(call_site.getCaller())
+                  // visited.find(call) == visited.end()
+                  // functionsVisited.find(call_site.getCaller()) == functionsVisited.end()
+                  )
                 continue;
               if (DBG) errs() << "    function user: " << *call << '\n';
               if (DBG) errs() << "    function arg: " << arg->getArgNo()
-                << " user: " << *CallSite(call).getArgOperand(arg->getArgNo()) << '\n';
-              Value *user = CallSite(call).getArgOperand(arg->getArgNo());
-              insertElement(user, chain, walk);
+                << " user: " << *caller_arg << '\n';
+              insertElement(caller_arg, chain, walk);
             }
           }
         } else {
@@ -455,6 +521,21 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
       }
     }
   }
+  // Modification was in a return value, then add the return instructions
+  // in that call
+  // TODO: cleanup duplicate code
+  /* else if (isa<CallInst>(elem) || isa<InvokeInst>(elem)) {
+    CallSite call(elem);
+    auto [caller, callee, arg_no] = extractCallerCallee(call, 0);
+    if (callee && !isIncompatibleFun(callee)) {
+      callGraph->addEdge(caller, callee);
+      for (auto &I : instructions(callee)) {
+        if (ReturnInst *ret = dyn_cast<ReturnInst>(&I)) {
+          insertElement(ret->getOperand(0), chain, walk);
+        }
+      }
+    }
+  } */
 
   /*
    * One limitation: we currently do not support pointer arithmetic, but only
@@ -514,6 +595,43 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
     } else if (isa<CallInst>(user) || isa<InvokeInst>(user)) {
       processCall(CallSite(user), elem, chain, walk);
     }
+    // Constant that may contain global variable
+    else if (Constant *c = dyn_cast<Constant>(user)) {
+      c = stripBitCastsAndAlias(c);
+
+      // errs() << "stripped const " << *c << '\n';
+      if (ConstantExpr *expr = dyn_cast<ConstantExpr>(c)) {
+        // errs() << "stripped constexpr " << *expr << '\n';
+        if (expr->getOpcode() == Instruction::GetElementPtr &&
+            isa<GlobalVariable>(expr->getOperand(0)) &&
+            expr->getOperand(0) == elem)
+        {
+          auto *gep = dyn_cast<GetElementPtrInst>(expr->getAsInstruction());
+          // gep->getType()->get
+          auto newchain = match_gep(chain, gep, nullptr);
+          delete gep;
+          if (newchain.hasValue())
+            insertElement(c, newchain.getValue(), walk);
+        } else {
+          // Unsupported global var usage
+          continue;
+        }
+      } else if (Function *fun = dyn_cast<Function>(c)) {
+        // TODO: add function pointer into data flow analysis
+        continue;
+        /* auto newchain = match_call(chain, fun);
+        if (newchain.hasValue()) {
+          if (newchain.getValue().get() == nullptr)
+            addHitPoint(load);
+        } */
+      } else if (isa<GlobalVariable>(c)) {
+        // Do nothing, fall to search for users
+        insertElement(user, chain, walk);
+      } else {
+        // Other (ConstantData, etc.), ignore and don't find users
+        continue;
+      }
+    }
     // Those that are as-is: pointer cast, return, ternary operators
     else if (isa<BitCastInst>(user) || isa<ReturnInst>(user) ||
              isa<PHINode>(user) || isa<SelectInst>(user)) {
@@ -548,35 +666,8 @@ void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
   for (arg_no = 0; arg_no < call.getNumArgOperands(); arg_no++) {
     if (call.getArgOperand(arg_no) == arg) break;
   }
-  Function *caller = call.getCaller();
-  Function *callee = call.getCalledFunction();
-  Value *called_value = nullptr;
-
-  // If it is an indirect call, try to extract the callee
-  if (!callee) {
-    called_value = call.getCalledValue();
-  } else if (demangleName(callee->getName()) == "pthread_create" && arg_no == 3) {
-    // reset callee so we will not search into pthread_create
-    callee = nullptr;
-    called_value = call.getArgOperand(2);
-    arg_no -= 3;
-  } else {
-    // Do nothing
-  }
-
-  // We need to extract the actual callee
-  if (called_value) {
-    if (ConstantExpr *expr = dyn_cast<ConstantExpr>(called_value)) {
-      // First case: simple function pointer cast
-      if (expr->getOpcode() == Instruction::BitCast && isa<Function>(expr->getOperand(0))) {
-        callee = dyn_cast<Function>(expr->getOperand(0));
-      } else {
-        errs() << "Unknown function call to : " << *expr << '\n';
-      }
-    } else {
-      // TODO: Second case: probably a `load`ed value, try match the chain
-    }
-  }
+  auto [caller, callee, new_arg_no] = extractCallerCallee(call, arg_no);
+  arg_no = new_arg_no;
   // Still cannot get callee with either direct or indirect call, skip.
   if (!callee) return;
 
@@ -585,9 +676,8 @@ void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
   Argument *passed_arg = callee->arg_begin() + arg_no;
   insertElement(passed_arg, chain, walk);
 
-  for (inst_iterator I = inst_begin(callee), E = inst_end(callee); I != E;
-      ++I) {
-    if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&*I)) {
+  for (auto &I : instructions(callee)) {
+    if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&I)) {
       returnCallMap[returnInst].push_back(inst);
     }
   }
@@ -599,20 +689,6 @@ void UserGraph::insertElement(Value *elem, FieldChain chain, UserGraphWalkType w
   if (is_new_chain && visited_elem.size() <= 3) {
     if (DBG) errs() << "        insert: " << *elem << '\n'
                     << "         chain: " << chain << '\n';
-    // Ignore constants including global variable, so that we will not
-    // reference `ret 0` from one function to another.
-    // TODO: what if there is data from from global variable to a variable
-    // before reaching the checker?
-    if (isa<Constant>(elem)) {
-      // Special case: global variable is used as an operand
-      // TODO: add field allocation chain for usage check
-      if (ConstantExpr *expr = dyn_cast<ConstantExpr>(elem)) {
-        if (expr->getOpcode() == Instruction::GetElementPtr &&
-            isa<GlobalVariable>(expr->getOperand(0)))
-          visited[expr->getOperand(0)].insert(chain);
-      }
-      return;
-    }
     if (walk == UserGraphWalkType::DFS)
       visit_stack.push(elem);
     else
@@ -623,7 +699,7 @@ void UserGraph::insertElement(Value *elem, FieldChain chain, UserGraphWalkType w
   }
   if (DBG) {
     for (auto chain : visited_elem)
-      errs() << "          old chain is: " << chain << '\n';
+      errs() << "         new chain has: " << chain << '\n';
   }
 }
 
@@ -636,7 +712,8 @@ bool UserGraph::isIncompatibleFun(Function *fun) {
   std::string name = demangleName(fun->getName());
   if (name.rfind("std", 0) == 0 || name.rfind("boost", 0) == 0 ||
       name.rfind("ib::logger", 0) == 0 || name.rfind("PolicyMutex", 0) == 0 ||
-      name.rfind("__gnu", 0) == 0 || name.rfind("ut_allocator", 0) == 0) {
+      name.rfind("__gnu", 0) == 0 || name.rfind("ut_allocator", 0) == 0 ||
+      alloc_funcs.find(name) != alloc_funcs.end()) {
     return true;
   }
   return false;

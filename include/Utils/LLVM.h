@@ -29,6 +29,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Value.h"
+#include "llvm/IR/CallSite.h"
 
 using namespace llvm;
 
@@ -49,5 +50,10 @@ bool isAccessingSameStructVar(const GetElementPtrInst* inst1,
 
 // Printing
 void printCallSite(Value* val);
+
+std::tuple<Function *, Function *, unsigned>
+extractCallerCallee(CallSite call, unsigned arg_no);
+
+Constant *stripBitCastsAndAlias(Constant *c);
 
 #endif /* _UTILS_LLVM_H_ */

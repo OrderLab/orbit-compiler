@@ -15,6 +15,9 @@ all: $(EXES) $(BITCODES) $(ASSEMBLYS)
 %.bc: %.c
 	clang -c -g -O0 -emit-llvm $< -o $@
 
+%.bc: %.cpp
+	clang++ -c -g -O0 -emit-llvm $< -o $@
+
 %.ll: %.bc
 	llvm-dis $<
 

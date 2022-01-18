@@ -145,9 +145,10 @@ class UserGraph {
   typedef std::unordered_set<Instruction *> HitSet;
 
   UserGraph(Value *v, CallGraph *cg, Function *target, bool memberAnalysis,
-            Module &M, int depth = -1)
+            const std::set<std::string> &alloc_funcs, int depth = -1)
     : functionsVisited(),
-      root(v), maxDepth(depth), callGraph(cg), target(target), M(M),
+      root(v), maxDepth(depth), callGraph(cg), target(target),
+      alloc_funcs(alloc_funcs),
       memberAnalysis(memberAnalysis)
   {}
   ~UserGraph() {}
@@ -195,9 +196,9 @@ class UserGraph {
   VisitStack visit_stack;
   CallGraph *callGraph;
   Function *target;
-  Module &M;
   ReturnCallMap returnCallMap;
   HitSet hitPoints;
+  const std::set<std::string> &alloc_funcs;
   bool memberAnalysis;
 };
 

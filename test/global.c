@@ -46,12 +46,9 @@ void check_and_resolve(struct lock_t *lock) {
   return;
 }
 
-extern int fff();
-
 int main() {
   struct lock_t *lock = create_lock();
   create_trx();
-  fff();
   check_and_resolve(lock);
   // This still does not work.
   /* check_and_resolve(lock, trx); */

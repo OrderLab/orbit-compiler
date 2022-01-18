@@ -128,6 +128,8 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     if (F.isDeclaration() || F.isIntrinsic()) return false;
     std::string demangled = demangleFunctionName(&F);
 
+    // if (demangled != "quicklistCreate") return false;
+
     for (inst_iterator I = inst_begin(&F), E = inst_end(&F); I != E; ++I) {
       Instruction *inst = &*I;
       // Create CallSite object which is a common abstraction over call and
@@ -138,7 +140,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
         if (calledFun == NULL) continue;
         std::string calledName = demangleName(calledFun->getName());
         if (heapAllocFunctions.find(calledName) != heapAllocFunctions.end()) {
-          ObiWanAnalysis ob(inst, &F, targetFun, M);
+          ObiWanAnalysis ob(inst, &F, targetFun, heapAllocFunctions);
           ob.performDefUse();
           if (ob.isAllocationPoint()) {
             heapCalls.push_back(inst);
