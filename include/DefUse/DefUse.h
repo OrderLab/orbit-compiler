@@ -40,6 +40,7 @@ namespace defuse {
 struct FieldChainElem;
 class FieldChain : public std::shared_ptr<FieldChainElem> {
   size_t _hash;
+  static size_t calc_hash(const FieldChainElem *chain);
 public:
   FieldChain(FieldChainElem *chain)
     : std::shared_ptr<FieldChainElem>(chain), _hash(calc_hash(chain)) {}
@@ -49,7 +50,6 @@ public:
   FieldChain nest_call(Function *fun, size_t arg_no);
   bool operator==(const FieldChain &rhs) const;
   size_t hash() const { return _hash; }
-  static size_t calc_hash(const FieldChainElem *chain);
 };
 raw_ostream &operator<<(raw_ostream &os, const FieldChain &chain);
 
@@ -119,6 +119,27 @@ struct std::hash<llvm::defuse::FieldChain> {
   }
 };
 
+
+// TODO: We should restructure the files and put utilities in another file
+// TODO: lifecycle based alloc/dealloc rule
+// TODO: turn this into CLI arguments
+struct AllocRules {
+  // Current rule for alloc does not allow data flow into allocation
+  // functions, and the allocated pointer defaults to the return value.
+  std::set<std::string> alloc;
+  // Dealloc and realloc allow specifying the argument number of
+  // previously allocated value.
+  std::map<std::string, unsigned> dealloc;
+  std::map<std::string, unsigned> realloc;
+  // If the provided string has a single '*' character, it will ignore
+  // all functions that is prefixed with the name before '*'. Otherwise,
+  // use exact matching. This will be the last rule to match on.
+  std::set<std::string> ignored;
+
+  bool should_ignore(const std::string &name) const;
+};
+
+
 namespace llvm {
 namespace defuse {
 
@@ -131,25 +152,23 @@ enum class UserGraphWalkType { BFS, DFS };
 // User graph for a given instruction: it includes the direct users as well as
 // the transitive closure of users' users etc.
 class UserGraph {
- public:
-  typedef std::pair<Value *, int> UserNode;
+public:
+  // Current value or use point, then the idx of last one (-1 means the start)
+  typedef std::tuple<Value *, FieldChain, ssize_t> UserNode;
   typedef std::vector<UserNode> UserNodeList;
-  typedef UserNodeList::iterator iterator;
-  typedef UserNodeList::const_iterator const_iterator;
   typedef std::unordered_map<Value *, std::unordered_set<FieldChain>> VisitedNodeSet;
-  typedef std::queue<std::pair<Value *, FieldChain>> VisitQueue;
+  typedef std::queue<std::tuple<Value *, FieldChain, ssize_t>> VisitQueue;
   typedef std::stack<Value *> VisitStack;
   typedef std::unordered_map<Function *, std::set<Type *>> FunctionSet;
   typedef std::unordered_map<Instruction *, std::vector<Instruction *>>
       ReturnCallMap;
-  typedef std::unordered_set<Instruction *> HitSet;
+  typedef std::unordered_map<Instruction *, ssize_t> HitSet;
 
-  UserGraph(Value *v, CallGraph *cg, Function *target, bool memberAnalysis,
-            const std::set<std::string> &alloc_funcs, int depth = -1)
+  UserGraph(Value *v, CallGraph *cg, Function *target,
+            const AllocRules &alloc_rules, int depth = -1)
     : functionsVisited(),
       root(v), maxDepth(depth), callGraph(cg), target(target),
-      alloc_funcs(alloc_funcs),
-      memberAnalysis(memberAnalysis)
+      alloc_rules(alloc_rules)
   {}
   ~UserGraph() {}
 
@@ -159,11 +178,6 @@ class UserGraph {
     else
       doBFS();
   }
-
-  const_iterator begin() const { return userList.begin(); }
-  const_iterator end() const { return userList.end(); }
-  iterator begin() { return userList.begin(); }
-  iterator end() { return userList.end(); }
 
   FunctionSet::iterator func_begin() { return functionsVisited.begin(); }
   FunctionSet::iterator func_end() { return functionsVisited.end(); }
@@ -178,10 +192,10 @@ class UserGraph {
 
  private:
   bool isIncompatibleFun(Function *fun);
-  void processUser(Value *elem, FieldChain chain, UserGraphWalkType walk);
-  void processCall(CallSite call, Value *arg, FieldChain chain, UserGraphWalkType walk);
-  void insertElement(Value *elem, FieldChain chain, UserGraphWalkType walk);
-  void addHitPoint(Instruction *inst);
+  void processUser(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk);
+  void processCall(CallSite call, Value *arg, FieldChain chain, ssize_t last, UserGraphWalkType walk);
+  void insertElement(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk);
+  void addHitPoint(Instruction *inst, ssize_t last);
 
  public:
   FunctionSet functionsVisited;
@@ -198,8 +212,7 @@ class UserGraph {
   Function *target;
   ReturnCallMap returnCallMap;
   HitSet hitPoints;
-  const std::set<std::string> &alloc_funcs;
-  bool memberAnalysis;
+  const AllocRules &alloc_rules;
 };
 
 }  // namespace defuse

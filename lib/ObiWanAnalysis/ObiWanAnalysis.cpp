@@ -9,9 +9,9 @@
 #include "ObiWanAnalysis/ObiWanAnalysis.h"
 
 ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end,
-    const std::set<std::string> &alloc_funcs)
+    const AllocRules &rules)
   : callGraph(), root(root), start(start), end(end),
-    ug(root, &callGraph, end, isConstructor(root), alloc_funcs),
+    ug(root, &callGraph, end, rules),
     calcIsAllocationPoint()
 {}
 

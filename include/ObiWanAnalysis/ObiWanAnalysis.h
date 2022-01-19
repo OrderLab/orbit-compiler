@@ -29,7 +29,7 @@ class ObiWanAnalysis {
 
  public:
   ObiWanAnalysis(Value *root, Function *start, Function *end,
-      const std::set<std::string> &alloc_funcs);
+      const AllocRules &rules);
   ~ObiWanAnalysis() {};
   bool isAllocationPoint();
   void performDefUse();

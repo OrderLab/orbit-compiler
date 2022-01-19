@@ -70,11 +70,52 @@ raw_ostream &llvm::defuse::operator<<(raw_ostream &os, const FieldChain &chain) 
   return os;
 }
 
+// TODO: optimize this part
+bool AllocRules::should_ignore(const std::string &name) const {
+  if (alloc.find(name) != alloc.end() ||
+      dealloc.find(name) != dealloc.end() ||
+      realloc.find(name) != realloc.end() ||
+      ignored.find(name) != ignored.end())
+    return true;
+  for (auto &s : ignored) {
+    if (!s.empty() && s[s.length()-1] == '*') {
+      if (name.compare(0, s.length()-1, s) == 0)
+        return true;;
+    }
+  }
+  return false;
+}
+
+static void explainDefUseChain(const UserGraph::UserNodeList &userList,
+                               Instruction *inst, ssize_t last)
+{
+  errs() << " === Begin explain: ===\n";
+  errs() << "Usage point is " << *inst << '\n'
+    << "\tin func " << demangleName(inst->getFunction()->getName()) << '\n';
+  while (last != -1) {
+    auto [elem, chain, prev] = userList[last];
+    errs() << "visited " << *elem << " chain is " << chain << " prev is " << prev << '\n';
+    if (Instruction *inst = dyn_cast<Instruction>(elem)) {
+      errs() << "\t in func " << demangleName(inst->getFunction()->getName()) << '\n';
+    } else if (Constant *c = dyn_cast<Constant>(elem)) {
+      errs() << "\t is const " << *c << '\n';
+    } else if (Argument *arg = dyn_cast<Argument>(elem)) {
+      errs() << "\t arg " << *arg
+        << " in func " << demangleName(arg->getParent()->getName()) << '\n';
+    } else {
+      errs() << "\t unknown type " << *elem << '\n';
+    }
+    last = prev;
+  }
+  errs() << " === End explain ===\n";
+}
+
 static bool functionGlobalVarVisitedHelper(
     Function *fun,
     std::unordered_set<Function*> &visited_fuctions,
     const UserGraph::VisitedNodeSet &visited_values,
-    const UserGraph::HitSet &hitPoints)
+    const UserGraph::HitSet &hitPoints,
+    const UserGraph::UserNodeList &userList)
 {
   bool DBG = false;
   if (fun == nullptr) return false;
@@ -95,6 +136,8 @@ static bool functionGlobalVarVisitedHelper(
 
     if (hitPoints.find(inst) != hitPoints.end()) {
       errs() << "Is a hit point\n";
+      if (DBG)
+        explainDefUseChain(userList, inst, hitPoints.find(inst)->second);
       return true;
     }
 
@@ -134,7 +177,8 @@ static bool functionGlobalVarVisitedHelper(
     } else if (isa<CallInst>(inst) || isa<InvokeInst>(inst)) {
       // For newer LLVm, cast to Callbase
       Function *callee = CallSite(inst).getCalledFunction();
-      if (functionGlobalVarVisitedHelper(callee, visited_fuctions, visited_values, hitPoints))
+      if (functionGlobalVarVisitedHelper(callee, visited_fuctions,
+            visited_values, hitPoints, userList))
         return true;
     }
   }
@@ -145,7 +189,8 @@ static bool functionGlobalVarVisitedHelper(
 bool UserGraph::functionGlobalVarVisited(Function *fun) {
   if (DBG) errs() << "End function is : " << fun->getName() << '\n';
   std::unordered_set<Function*> visited_fuctions;
-  return functionGlobalVarVisitedHelper(fun, visited_fuctions, visited, hitPoints);
+  return functionGlobalVarVisitedHelper(fun, visited_fuctions, visited,
+      hitPoints, userList);
 }
 
 bool UserGraph::isFunctionVisited(Function *fun) {
@@ -158,36 +203,28 @@ void UserGraph::doDFS() {
   while (!visit_stack.empty()) {
     if (isFunctionVisited(target)) return;
     Value *elem = visit_stack.top();
-    if (elem != root && !isa<AllocaInst>(elem)) {
-      // skip alloca inst, which comes from the operand of StoreInstruction.
-      userList.push_back(UserNode(elem, 1));
-    }
     visit_stack.pop();
-    processUser(elem, nullptr, UserGraphWalkType::DFS);
+    processUser(elem, nullptr, -1, UserGraphWalkType::DFS);
   }
 }
 
 void UserGraph::doBFS() {
   if (DBG) errs() << "Begin BFS (root: " << *root << ")\n\n";
   visited[root].insert(nullptr);
-  visit_queue.push({root, nullptr});
+  visit_queue.push({root, nullptr, -1});
   /* if (Instruction *ins = dyn_cast<Instruction>(root))
     errs() << " === root is in : " << ins->getFunction()->getName() << '\n'; */
-  visit_queue.push({nullptr, nullptr});  // a dummy element marking end of a level
+  visit_queue.push({nullptr, nullptr, -1});  // a dummy element marking end of a level
   int level = 0;
   while (!visit_queue.empty()) {
     // if (isFunctionVisited(target)) break;
-    auto [head, chain] = visit_queue.front();
+    auto [head, chain, last] = visit_queue.front();
     if (head != nullptr) {
-      if (head != root && !isa<AllocaInst>(head)) {
-        // skip alloca inst, which comes from the operand of StoreInstruction.
-        userList.push_back(UserNode(head, level));
-      }
-      processUser(head, chain, UserGraphWalkType::BFS);
+      processUser(head, chain, last, UserGraphWalkType::BFS);
     }
     visit_queue.pop();  // remove the front element
     if (!visit_queue.empty()) {
-      auto [head, chain] = visit_queue.front();
+      auto [head, chain, last] = visit_queue.front();
       if (head != nullptr) {
         continue;
       }
@@ -200,7 +237,7 @@ void UserGraph::doBFS() {
       }
       if (!visit_queue.empty()) {
         // if this is not the last, add a marker at the end of the visit_queue
-        visit_queue.push({nullptr, nullptr});
+        visit_queue.push({nullptr, nullptr, -1});
       }
     }
   }
@@ -345,7 +382,7 @@ Optional<FieldChain> match_deref(FieldChain chain) {
 /*
  * Search for dst if it is src, and search for dst if it is src.
  */
-void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType walk) {
+void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk) {
   // bool DBG = true;
   if (DBG) errs() << " === begin process user === : " << *elem << '\n'
                   << "               chain is === : " << chain << '\n';
@@ -379,13 +416,13 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
   if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(elem)) {
     auto newchain = nest_gep(chain, gep);
     if (newchain == None) return;
-    insertElement(gep->getOperand(0), newchain.getValue(), walk);
+    insertElement(gep->getOperand(0), newchain.getValue(), last, walk);
   } else if (LoadInst *load = dyn_cast<LoadInst>(elem)) {
-    insertElement(load->getOperand(0), chain.nest_deref(), walk);
+    insertElement(load->getOperand(0), chain.nest_deref(), last, walk);
   }
   // We can also trace the src of pointer cast
   else if (BitCastInst *cast = dyn_cast<BitCastInst>(elem)) {
-    insertElement(cast->getOperand(0), chain, walk);
+    insertElement(cast->getOperand(0), chain, last, walk);
   }
   // Constant variable that may contain a global variable or function pointer
   else if (Constant *val = dyn_cast<Constant>(elem)) {
@@ -406,7 +443,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
         auto newchain = nest_gep(chain, gep);
         delete gep;
         if (newchain.hasValue())
-          insertElement(expr->getOperand(0), newchain.getValue(), walk);
+          insertElement(expr->getOperand(0), newchain.getValue(), last, walk);
       } else {
         // Unsupported global var usage
         return;
@@ -473,7 +510,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
         if (DBG) errs() << "    function user: " << *call << '\n';
         if (DBG) errs() << "    function arg: " << arg->getArgNo()
           << " user: " << *caller_arg << '\n';
-        insertElement(caller_arg, chain, walk);
+        insertElement(caller_arg, chain, last, walk);
       } else if (ConstantExpr *c = dyn_cast<ConstantExpr>(call)) {
         if (c->getOpcode() == Instruction::BitCast) {
           for (User *call : c->users()) {
@@ -490,7 +527,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
               if (DBG) errs() << "    function user: " << *call << '\n';
               if (DBG) errs() << "    function arg: " << arg->getArgNo()
                 << " user: " << *caller_arg << '\n';
-              insertElement(caller_arg, chain, walk);
+              insertElement(caller_arg, chain, last, walk);
             }
           }
         } else {
@@ -506,7 +543,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
   else if (ReturnInst *ret = dyn_cast<ReturnInst>(elem)) {
     if (returnCallMap.count(ret) != 0) {
       for (auto inst : returnCallMap[ret]) {
-        insertElement(inst, chain, walk);
+        insertElement(inst, chain, last, walk);
       }
     } else {
       Function *fun = ret->getFunction();
@@ -517,7 +554,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
           callGraph->addEdge(fun, caller);
         }
         // TODO: handle pointer passing: add pointer to data flow analysis
-        insertElement(user, chain, walk);
+        insertElement(user, chain, last, walk);
       }
     }
   }
@@ -561,31 +598,31 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
       if (elem == store->getOperand(0)) {
         // If it was the src operand, search for definition of dst, add deref
         // to the chain.
-        insertElement(store->getOperand(1), chain.nest_deref(), walk);
+        insertElement(store->getOperand(1), chain.nest_deref(), last, walk);
       } else {
         // If it was the dst operand, search for usage of src, remove one
         // deref from chain.
         auto newchain = match_deref(chain);
         if (newchain.hasValue()) {
           if (newchain.getValue().get() == nullptr)
-            addHitPoint(store);
-          insertElement(store->getOperand(0), newchain.getValue(), walk);
+            addHitPoint(store, last);
+          insertElement(store->getOperand(0), newchain.getValue(), last, walk);
         }
       }
     } else if (LoadInst *load = dyn_cast<LoadInst>(user)) {
       auto newchain = match_deref(chain);
       if (newchain.hasValue()) {
         if (newchain.getValue().get() == nullptr)
-          addHitPoint(load);
-        insertElement(user, newchain.getValue(), walk);
+          addHitPoint(load, last);
+        insertElement(user, newchain.getValue(), last, walk);
       }
     } else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(user)) {
       bool hit;
       auto newchain = match_gep(chain, gep, &hit);
       if (hit)
-        addHitPoint(gep);
+        addHitPoint(gep, last);
       if (newchain.hasValue())
-        insertElement(user, newchain.getValue(), walk);
+        insertElement(user, newchain.getValue(), last, walk);
     } else if (ExtractValueInst *val = dyn_cast<ExtractValueInst>(user)) {
       // TODO
       errs() << "Unsupported Instruction: " << *user << '\n';
@@ -593,7 +630,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
       // TODO
       errs() << "Unsupported Instruction: " << *user << '\n';
     } else if (isa<CallInst>(user) || isa<InvokeInst>(user)) {
-      processCall(CallSite(user), elem, chain, walk);
+      processCall(CallSite(user), elem, chain, last, walk);
     }
     // Constant that may contain global variable
     else if (Constant *c = dyn_cast<Constant>(user)) {
@@ -611,7 +648,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
           auto newchain = match_gep(chain, gep, nullptr);
           delete gep;
           if (newchain.hasValue())
-            insertElement(c, newchain.getValue(), walk);
+            insertElement(c, newchain.getValue(), last, walk);
         } else {
           // Unsupported global var usage
           continue;
@@ -626,7 +663,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
         } */
       } else if (isa<GlobalVariable>(c)) {
         // Do nothing, fall to search for users
-        insertElement(user, chain, walk);
+        insertElement(user, chain, last, walk);
       } else {
         // Other (ConstantData, etc.), ignore and don't find users
         continue;
@@ -635,7 +672,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
     // Those that are as-is: pointer cast, return, ternary operators
     else if (isa<BitCastInst>(user) || isa<ReturnInst>(user) ||
              isa<PHINode>(user) || isa<SelectInst>(user)) {
-      insertElement(user, chain, walk);
+      insertElement(user, chain, last, walk);
     } else {
       // Other thing: ignore or output error
       if (isa<Instruction>(user)) {
@@ -659,7 +696,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, UserGraphWalkType wal
 }
 
 void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
-                            UserGraphWalkType walk)
+    ssize_t last, UserGraphWalkType walk)
 {
   Instruction *inst = call.getInstruction();
   unsigned int arg_no;
@@ -674,7 +711,7 @@ void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
   if (isIncompatibleFun(callee) || callee->isVarArg()) return;
   callGraph->addEdge(caller, callee);
   Argument *passed_arg = callee->arg_begin() + arg_no;
-  insertElement(passed_arg, chain, walk);
+  insertElement(passed_arg, chain, last, walk);
 
   for (auto &I : instructions(callee)) {
     if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&I)) {
@@ -683,7 +720,9 @@ void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
   }
 }
 
-void UserGraph::insertElement(Value *elem, FieldChain chain, UserGraphWalkType walk) {
+void UserGraph::insertElement(Value *elem, FieldChain chain, ssize_t last,
+                              UserGraphWalkType walk)
+{
   std::unordered_set<FieldChain> &visited_elem = visited[elem];
   bool is_new_chain = visited_elem.insert(chain).second;
   if (is_new_chain && visited_elem.size() <= 3) {
@@ -691,8 +730,11 @@ void UserGraph::insertElement(Value *elem, FieldChain chain, UserGraphWalkType w
                     << "         chain: " << chain << '\n';
     if (walk == UserGraphWalkType::DFS)
       visit_stack.push(elem);
-    else
-      visit_queue.push({elem, chain});
+    else {
+      ssize_t next = userList.size();
+      userList.push_back({elem, chain, last});
+      visit_queue.push({elem, chain, next});
+    }
   } else {
     if (DBG) errs() << "        insert failure: is_new_chain=" << is_new_chain
       << " size=" << visited_elem.size() << '\n';
@@ -703,8 +745,8 @@ void UserGraph::insertElement(Value *elem, FieldChain chain, UserGraphWalkType w
   }
 }
 
-void UserGraph::addHitPoint(Instruction *inst) {
-  hitPoints.insert(inst);
+void UserGraph::addHitPoint(Instruction *inst, ssize_t last) {
+  hitPoints.insert({inst, last});
 }
 
 bool UserGraph::isIncompatibleFun(Function *fun) {
@@ -713,7 +755,7 @@ bool UserGraph::isIncompatibleFun(Function *fun) {
   if (name.rfind("std", 0) == 0 || name.rfind("boost", 0) == 0 ||
       name.rfind("ib::logger", 0) == 0 || name.rfind("PolicyMutex", 0) == 0 ||
       name.rfind("__gnu", 0) == 0 || name.rfind("ut_allocator", 0) == 0 ||
-      alloc_funcs.find(name) != alloc_funcs.end()) {
+      alloc_rules.should_ignore(name)) {
     return true;
   }
   return false;

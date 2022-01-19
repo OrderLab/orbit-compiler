@@ -39,18 +39,49 @@ static cl::list<std::string> TargetFunctions("target-functions",
 
 struct ObiWanAnalysisPass : public llvm::ModulePass {
   static char ID;
-  // TODO: Fix
-  /* std::set<std::string> ignoreFunctions{
-    "mem_heap_alloc", "mem_heap_zalloc", "mem_heap_create_block_func",
-  }; */
-  std::set<std::string> heapAllocFunctions{
-    "malloc", "calloc", "realloc",
-    "mem_heap_alloc", "mem_heap_zalloc", "mem_heap_create_func", "mem_heap_create_block_func",
-    "ut_allocator<unsigned char>::allocate",
-    "zmalloc", "zcalloc", "zrealloc", "zstrdup",
-    "ngx_pcalloc", "ngx_palloc", "ngx_alloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
-    "apr_pcalloc", "apr_palloc",
+
+  const AllocRules rules = {
+    .alloc{
+      // standard
+      "malloc", "calloc",
+      // MySQL
+      "mem_heap_alloc", "mem_heap_zalloc",
+      "mem_strdup", "mem_strdupl", "mem_heap_strdupl",
+      "ut_allocator<unsigned char>::allocate",
+      // Redis
+      "zmalloc", "zcalloc", "zstrdup",
+      // Nginx
+      "ngx_alloc", "ngx_calloc", "ngx_memalign",
+      "ngx_palloc", "ngx_pcalloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
+      // Apache
+      "apr_pcalloc", "apr_palloc",
+    },
+    .dealloc{
+      // standard
+      {"free", 0},
+      // MySQL
+      {"ut_allocator<unsigned char>::deallocate", 1}, {"ut_allocator<unsigned char>::reallocate", 1},
+      // Redis
+      {"zfree", 0},
+      // Nginx
+      {"ngx_free", 0}, {"ngx_pfree", 1},
+    },
+    .realloc{
+      // standard
+      {"realloc", 0},
+      // Redis
+      {"zrealloc", 0},
+    },
+    .ignored{
+      // MySQL
+      "mem_heap_*", "ut_allocator*",
+      // Redis
+      "zmalloc_*", "je_*",
+      // Nginx
+      "ngx_pool_*", "ngx_palloc_*", "ngx_create_pool", "ngx_destroy_pool", "ngx_reset_pool",
+    }
   };
+
   std::vector<Instruction *> heapCalls;
 
   ObiWanAnalysisPass() : llvm::ModulePass(ID) {}
@@ -78,9 +109,9 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
       for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
         Function &F = *I;
         if (!F.isDeclaration() &&
-            heapAllocFunctions.find(demangleName(F.getName())) == heapAllocFunctions.end())
+            rules.alloc.find(demangleName(F.getName())) == rules.alloc.end())
         {
-          modified |= identifyHeapAlloc(F, targetFun, M);
+          modified |= identifyHeapAlloc(F, targetFun, rules);
         }
       }
     }
@@ -124,7 +155,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     return instrumenter->instrumentInstr(inst);
   }
 
-  bool identifyHeapAlloc(Function &F, Function *targetFun, Module &M) {
+  bool identifyHeapAlloc(Function &F, Function *targetFun, const AllocRules &rules) {
     if (F.isDeclaration() || F.isIntrinsic()) return false;
     std::string demangled = demangleFunctionName(&F);
 
@@ -139,8 +170,8 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
         Function *calledFun = cs.getCalledFunction();
         if (calledFun == NULL) continue;
         std::string calledName = demangleName(calledFun->getName());
-        if (heapAllocFunctions.find(calledName) != heapAllocFunctions.end()) {
-          ObiWanAnalysis ob(inst, &F, targetFun, heapAllocFunctions);
+        if (rules.alloc.find(calledName) != rules.alloc.end()) {
+          ObiWanAnalysis ob(inst, &F, targetFun, rules);
           ob.performDefUse();
           if (ob.isAllocationPoint()) {
             heapCalls.push_back(inst);
