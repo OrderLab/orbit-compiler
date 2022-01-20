@@ -40,48 +40,6 @@ static cl::list<std::string> TargetFunctions("target-functions",
 struct ObiWanAnalysisPass : public llvm::ModulePass {
   static char ID;
 
-  const AllocRules rules = {
-    .alloc{
-      // standard
-      "malloc", "calloc",
-      // MySQL
-      "mem_heap_alloc", "mem_heap_zalloc",
-      "mem_strdup", "mem_strdupl", "mem_heap_strdupl",
-      "ut_allocator<unsigned char>::allocate",
-      // Redis
-      "zmalloc", "zcalloc", "zstrdup",
-      // Nginx
-      "ngx_alloc", "ngx_calloc", "ngx_memalign",
-      "ngx_palloc", "ngx_pcalloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
-      // Apache
-      "apr_pcalloc", "apr_palloc",
-    },
-    .dealloc{
-      // standard
-      {"free", 0},
-      // MySQL
-      {"ut_allocator<unsigned char>::deallocate", 1}, {"ut_allocator<unsigned char>::reallocate", 1},
-      // Redis
-      {"zfree", 0},
-      // Nginx
-      {"ngx_free", 0}, {"ngx_pfree", 1},
-    },
-    .realloc{
-      // standard
-      {"realloc", 0},
-      // Redis
-      {"zrealloc", 0},
-    },
-    .ignored{
-      // MySQL
-      "mem_heap_*", "ut_allocator*",
-      // Redis
-      "zmalloc_*", "je_*",
-      // Nginx
-      "ngx_pool_*", "ngx_palloc_*", "ngx_create_pool", "ngx_destroy_pool", "ngx_reset_pool",
-    }
-  };
-
   std::vector<Instruction *> heapCalls;
 
   ObiWanAnalysisPass() : llvm::ModulePass(ID) {}
@@ -91,29 +49,70 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     bool modified = false;
     addFunctionAttributes(M);
 
+    // TODO: turn this into CLI arguments
+    const AllocRules rules({
+      .M = M,
+      .alloc{
+        // standard
+        "malloc", "calloc",
+        // MySQL
+        "mem_heap_alloc", "mem_heap_zalloc",
+        "mem_strdup", "mem_strdupl", "mem_heap_strdupl",
+        "ut_allocator<unsigned char>::allocate",
+        // Redis
+        "zmalloc", "zcalloc", "zstrdup",
+        // Nginx
+        "ngx_alloc", "ngx_calloc", "ngx_memalign",
+        "ngx_palloc", "ngx_pcalloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
+        // Apache
+        "apr_pcalloc", "apr_palloc",
+      },
+      .dealloc{
+        // standard
+        {"free", 0},
+        // MySQL
+        {"ut_allocator<unsigned char>::deallocate", 1},
+        // Redis
+        {"zfree", 0},
+        // Nginx
+        {"ngx_free", 0}, {"ngx_pfree", 1},
+      },
+      .realloc{
+        // standard
+        {"realloc", 0},
+        // MySQL
+        {"ut_allocator<unsigned char>::reallocate", 1},
+        // Redis
+        {"zrealloc", 0},
+      },
+      .ignored{
+        // MySQL
+        "mem_heap_*", "ut_allocator*",
+        // Redis
+        "zmalloc_*", "je_*",
+        // Nginx
+        "ngx_pool_*", "ngx_palloc_*", "ngx_create_pool", "ngx_destroy_pool", "ngx_reset_pool",
+      }
+    });
+
     // Find Allocation Points
     std::set<std::string> targetFunctionSet(TargetFunctions.begin(),
                                             TargetFunctions.end());
 
-    for (auto it = targetFunctionSet.begin(); it != targetFunctionSet.end();
-         it++) {
+    for (auto &target_name : targetFunctionSet) {
       // Many functions with same name may exist. This is a gross
       // simplification
-      Function *targetFun = getFunctionWithName(*it, M);
+      Function *targetFun = getFunctionWithName(target_name, M);
 
       if (targetFun == NULL) {
-        dbgs() << "Could not find target function " << *it << "\n";
+        dbgs() << "Could not find target function " << target_name << "\n";
         continue;
       }
 
-      for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
-        Function &F = *I;
-        if (!F.isDeclaration() &&
-            rules.alloc.find(demangleName(F.getName())) == rules.alloc.end())
-        {
-          modified |= identifyHeapAlloc(F, targetFun, rules);
-        }
-      }
+      for (auto &alloc_func : rules.alloc)
+        modified |= identifyHeapAlloc((Function *)alloc_func, targetFun, rules);
+      for (auto &[alloc_func, arg_no] : rules.realloc)
+        modified |= identifyHeapAlloc((Function *)alloc_func, targetFun, rules);
     }
 
     errs() << "Found heapCalls " << heapCalls.size() << "\n";
@@ -155,28 +154,21 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
     return instrumenter->instrumentInstr(inst);
   }
 
-  bool identifyHeapAlloc(Function &F, Function *targetFun, const AllocRules &rules) {
-    if (F.isDeclaration() || F.isIntrinsic()) return false;
-    std::string demangled = demangleFunctionName(&F);
+  bool identifyHeapAlloc(Function *allocFunc, Function *targetFun, const AllocRules &rules) {
+    if (allocFunc->isIntrinsic()) return false;
 
-    // if (demangled != "quicklistCreate") return false;
+    for (const User *const_alloc_site : allocFunc->users()) {
+      User *alloc_site = (User *)const_alloc_site;
+      CallSite cs(alloc_site);
+      if (!(cs.isCall() || cs.isInvoke())) continue;
+      if (rules.should_ignore(cs.getCaller())) continue;
 
-    for (inst_iterator I = inst_begin(&F), E = inst_end(&F); I != E; ++I) {
-      Instruction *inst = &*I;
-      // Create CallSite object which is a common abstraction over call and
-      // invoke instructions
-      CallSite cs(inst);
-      if (cs.isCall() || cs.isInvoke()) {
-        Function *calledFun = cs.getCalledFunction();
-        if (calledFun == NULL) continue;
-        std::string calledName = demangleName(calledFun->getName());
-        if (rules.alloc.find(calledName) != rules.alloc.end()) {
-          ObiWanAnalysis ob(inst, &F, targetFun, rules);
-          ob.performDefUse();
-          if (ob.isAllocationPoint()) {
-            heapCalls.push_back(inst);
-          }
-        }
+      // if (demangleFunctionName(cs.getCaller()) != "zslCreate") continue;
+
+      ObiWanAnalysis ob(alloc_site, cs.getCaller(), targetFun, rules);
+      ob.performDefUse();
+      if (ob.isAllocationPoint()) {
+        heapCalls.push_back(dyn_cast<Instruction>(alloc_site));
       }
     }
     return false;

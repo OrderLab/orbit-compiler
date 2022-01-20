@@ -70,22 +70,7 @@ raw_ostream &llvm::defuse::operator<<(raw_ostream &os, const FieldChain &chain) 
   return os;
 }
 
-// TODO: optimize this part
-bool AllocRules::should_ignore(const std::string &name) const {
-  if (alloc.find(name) != alloc.end() ||
-      dealloc.find(name) != dealloc.end() ||
-      realloc.find(name) != realloc.end() ||
-      ignored.find(name) != ignored.end())
-    return true;
-  for (auto &s : ignored) {
-    if (!s.empty() && s[s.length()-1] == '*') {
-      if (name.compare(0, s.length()-1, s) == 0)
-        return true;;
-    }
-  }
-  return false;
-}
-
+// TODO: Refine def-use chain explanation and eliminate CallGraph
 static void explainDefUseChain(const UserGraph::UserNodeList &userList,
                                Instruction *inst, ssize_t last)
 {
@@ -264,8 +249,6 @@ Optional<FieldChain> nest_gep(FieldChain chain, GetElementPtrInst *gep) {
       chain = chain.nest_field(NULL, field->getSExtValue());
     } else {
       chain = chain.nest_field(NULL, FieldChainElem::ARRAY_FIELD);
-      // errs() << "Field pointer not supported: " << *gep << "\n";
-      // return None;
     }
   }
 
@@ -302,6 +285,8 @@ Optional<FieldChain> nest_gep(FieldChain chain, GetElementPtrInst *gep) {
  * for any field match, it will return None, so the caller will not proceeed.
  *
  * Caller should always check the hit variable.
+ *
+ * TODO: type matching
  */
 Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *hit) {
   const unsigned operands = gep->getNumOperands();
@@ -336,7 +321,6 @@ Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *h
   } else {
     // It may be a variable. We allow either const or var, as long as it is
     // offset type on the chain.
-    // return None;
     if (chain->type != FieldChainElem::type::offset)
       return None;
     // This may be a variable, allow arbitrary array offset
@@ -359,10 +343,7 @@ Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *h
         return None;
       }
     } else {
-      // return None;
       chain = chain->next;
-      // errs() << "Field pointer not supported: " << *gep << "\n";
-      // return None;
     }
     // Early return if we reached root at any level of the match
     if (chain.get() == nullptr) {
@@ -382,7 +363,7 @@ Optional<FieldChain> match_deref(FieldChain chain) {
 /*
  * Search for dst if it is src, and search for dst if it is src.
  */
-void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk) {
+void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, UserGraphWalkType walk) {
   // bool DBG = true;
   if (DBG) errs() << " === begin process user === : " << *elem << '\n'
                   << "               chain is === : " << chain << '\n';
@@ -392,8 +373,6 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
     Type *type = ins->getType();
     functionsVisited[fun].insert(type);
   }
-
-  // TODO: Move Constant handling from insert to here
 
   // We would not expect store instruction could have a user
   if (isa<StoreInst>(elem)) {
@@ -449,6 +428,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
         return;
       }
     } else if (Function *fun = dyn_cast<Function>(val)) {
+      (void)fun;
       // TODO: add function pointer into data flow analysis
       return;
       /* auto newchain = match_call(chain, fun);
@@ -465,102 +445,35 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
   }
   // Modification reaches to an argument
   else if (Argument *arg = dyn_cast<Argument>(elem)) {
-    // Must be a pointer argument
-    if (!arg->getType()->isPointerTy()) return;
-    if (DBG) errs() << "Is an argument\n";
-    Function *fun = arg->getParent();
-
-    bool has_caller = false;
-    auto callee = callGraph->callGraph.find(fun);
-    if (callee != callGraph->callGraph.end()) {
-      for (auto caller : callee->second) {
-        if (caller->edgeType == EdgeType::RETURN) {
-          if (DBG) {
-            errs() << "callee " << fun->getName()
-              << " has caller: " << caller->dst->getName() << '\n';
-          }
-          has_caller = true;
-          break;
-        }
-      }
-    }
-    auto is_caller = [this, callee](Function *fun) {
-      if (callee != callGraph->callGraph.end()) {
-        for (auto caller : callee->second) {
-          if (caller->edgeType == EdgeType::RETURN && caller->dst == fun)
-            return true;
-        }
-      }
-      return false;
-    };
-    // TODO simplify this duplicated
-    if (DBG) errs() << "    function name is: " << fun->getName() << "\n";
-    for (User *call : fun->users()) {
-      if (DBG) errs() << "    function user is: " << *call << "\n";
-      if (isa<CallInst>(call) || isa<InvokeInst>(call)) {
-        CallSite call_site(call);
-        Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
-        // If not previous caller, continue
-        if (has_caller &&
-            !is_caller(call_site.getCaller())
-            // visited.find(call) == visited.end()
-            // functionsVisited.find(call_site.getCaller()) == functionsVisited.end()
-            )
-          continue;
-        if (DBG) errs() << "    function user: " << *call << '\n';
-        if (DBG) errs() << "    function arg: " << arg->getArgNo()
-          << " user: " << *caller_arg << '\n';
-        insertElement(caller_arg, chain, last, walk);
-      } else if (ConstantExpr *c = dyn_cast<ConstantExpr>(call)) {
-        if (c->getOpcode() == Instruction::BitCast) {
-          for (User *call : c->users()) {
-            if (isa<CallInst>(call) || isa<InvokeInst>(call)) {
-              CallSite call_site(call);
-              Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
-              // If not previous caller, continue
-              if (has_caller &&
-                  !is_caller(call_site.getCaller())
-                  // visited.find(call) == visited.end()
-                  // functionsVisited.find(call_site.getCaller()) == functionsVisited.end()
-                  )
-                continue;
-              if (DBG) errs() << "    function user: " << *call << '\n';
-              if (DBG) errs() << "    function arg: " << arg->getArgNo()
-                << " user: " << *caller_arg << '\n';
-              insertElement(caller_arg, chain, last, walk);
-            }
-          }
-        } else {
-          // errs() << "not a call inst: " << *call << '\n';
-        }
-      } else {
-        // errs() << "not a call inst: " << *call << '\n';
-      }
-    }
-    // TODO: function pointer data flow
+    processArgument(arg, chain, last, walk);
   }
   // Track data flow of returned value in the caller
   else if (ReturnInst *ret = dyn_cast<ReturnInst>(elem)) {
-    if (returnCallMap.count(ret) != 0) {
-      for (auto inst : returnCallMap[ret]) {
+    Function *this_func = ret->getFunction();
+    if (calleeCallerMap.count(this_func) != 0) {
+      for (auto inst : calleeCallerMap[this_func])
         insertElement(inst, chain, last, walk);
-      }
     } else {
-      Function *fun = ret->getFunction();
-      for (auto user : fun->users()) {
-        if (Instruction *ins = dyn_cast<Instruction>(user)) {
-          Function *caller = ins->getFunction();
-          if (isIncompatibleFun(caller)) continue;
-          callGraph->addEdge(fun, caller);
+      for (auto user : this_func->users()) {
+        if (Instruction *inst = dyn_cast<Instruction>(user)) {
+          if (!(isa<CallInst>(inst) || isa<InvokeInst>(inst)))
+            continue;
+          CallSite call_site(inst);
+          auto [caller, callee, arg_no] = extractCallerCallee(call_site, -1);
+          if (isIncompatibleFun(caller) || this_func != callee) continue;
+          callGraph->addEdge(this_func, caller);
+          calleeCallerMap[this_func].insert(inst);
+          // TODO: handle pointer passing: add pointer to data flow analysis
+          insertElement(user, chain, last, walk);
         }
-        // TODO: handle pointer passing: add pointer to data flow analysis
-        insertElement(user, chain, last, walk);
       }
     }
   }
   // Modification was in a return value, then add the return instructions
   // in that call
   // TODO: cleanup duplicate code
+  // TODO: Add option to enable this, otherwise MySQL analysis is too slow,
+  // and generates much more false positives
   /* else if (isa<CallInst>(elem) || isa<InvokeInst>(elem)) {
     CallSite call(elem);
     auto [caller, callee, arg_no] = extractCallerCallee(call, 0);
@@ -568,7 +481,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
       callGraph->addEdge(caller, callee);
       for (auto &I : instructions(callee)) {
         if (ReturnInst *ret = dyn_cast<ReturnInst>(&I)) {
-          insertElement(ret->getOperand(0), chain, walk);
+          insertElement(ret->getOperand(0), chain, last, walk);
         }
       }
     }
@@ -623,10 +536,10 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
         addHitPoint(gep, last);
       if (newchain.hasValue())
         insertElement(user, newchain.getValue(), last, walk);
-    } else if (ExtractValueInst *val = dyn_cast<ExtractValueInst>(user)) {
+    } else if (isa<ExtractValueInst>(user)) {
       // TODO
       errs() << "Unsupported Instruction: " << *user << '\n';
-    } else if (InsertValueInst *val = dyn_cast<InsertValueInst>(user)) {
+    } else if (isa<InsertValueInst>(user)) {
       // TODO
       errs() << "Unsupported Instruction: " << *user << '\n';
     } else if (isa<CallInst>(user) || isa<InvokeInst>(user)) {
@@ -654,6 +567,7 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
           continue;
         }
       } else if (Function *fun = dyn_cast<Function>(c)) {
+        (void)fun;
         // TODO: add function pointer into data flow analysis
         continue;
         /* auto newchain = match_call(chain, fun);
@@ -695,8 +609,8 @@ void UserGraph::processUser(Value *elem, FieldChain chain, ssize_t last, UserGra
   }
 }
 
-void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
-    ssize_t last, UserGraphWalkType walk)
+void UserGraph::processCall(CallSite call, Value *arg, const FieldChain &chain,
+                            ssize_t last, UserGraphWalkType walk)
 {
   Instruction *inst = call.getInstruction();
   unsigned int arg_no;
@@ -713,15 +627,54 @@ void UserGraph::processCall(CallSite call, Value *arg, FieldChain chain,
   Argument *passed_arg = callee->arg_begin() + arg_no;
   insertElement(passed_arg, chain, last, walk);
 
-  for (auto &I : instructions(callee)) {
-    if (ReturnInst *returnInst = dyn_cast<ReturnInst>(&I)) {
-      returnCallMap[returnInst].push_back(inst);
+  // TODO: Take care of arg shift like pthread_create
+  calleeCallerMap[callee].insert(inst);
+}
+
+void UserGraph::processArgument(Argument *arg, const FieldChain &chain,
+    ssize_t last, UserGraphWalkType walk)
+{
+  // Must be a pointer argument
+  if (!arg->getType()->isPointerTy()) return;
+  // Must not be the arg itself
+  // if (chain.get() == nullptr) return;
+  if (DBG) errs() << "Is an argument\n";
+  Function *fun = arg->getParent();
+  if (DBG) errs() << "    function name is: " << fun->getName() << "\n";
+
+  auto add_caller_arg = [this, arg, &chain, last, walk, fun](CallSite call_site) {
+    // TODO: handle indirect call
+    if (call_site.getCalledFunction() != fun)
+      return;
+    Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
+    if (DBG) errs() << "    func user: " << *call_site.getInstruction() << '\n';
+    if (DBG) errs() << "    func arg: " << arg->getArgNo()
+      << " user: " << *caller_arg << '\n';
+    insertElement(caller_arg, chain, last, walk);
+  };
+
+  // Has caller
+  if (calleeCallerMap.find(fun) != calleeCallerMap.end()) {
+    for (Instruction *call_inst : calleeCallerMap.find(fun)->second) {
+      add_caller_arg(CallSite(call_inst));
+    }
+  } else {
+    for (User *call_inst : fun->users()) {
+      if (isa<CallInst>(call_inst) || isa<InvokeInst>(call_inst)) {
+        add_caller_arg(CallSite(call_inst));
+      } else if (ConstantExpr *c = dyn_cast<ConstantExpr>(call_inst)) {
+        for (User *call : c->users()) {
+          if (isa<CallInst>(call) || isa<InvokeInst>(call))
+            add_caller_arg(CallSite(call));
+        }
+      }
+      // TODO: function pointer data flow
     }
   }
 }
 
-void UserGraph::insertElement(Value *elem, FieldChain chain, ssize_t last,
-                              UserGraphWalkType walk)
+void UserGraph::insertElement(Value *elem, const FieldChain &chain,
+                              ssize_t last, UserGraphWalkType walk)
 {
   std::unordered_set<FieldChain> &visited_elem = visited[elem];
   bool is_new_chain = visited_elem.insert(chain).second;
@@ -755,7 +708,7 @@ bool UserGraph::isIncompatibleFun(Function *fun) {
   if (name.rfind("std", 0) == 0 || name.rfind("boost", 0) == 0 ||
       name.rfind("ib::logger", 0) == 0 || name.rfind("PolicyMutex", 0) == 0 ||
       name.rfind("__gnu", 0) == 0 || name.rfind("ut_allocator", 0) == 0 ||
-      alloc_rules.should_ignore(name)) {
+      alloc_rules.should_ignore(fun)) {
     return true;
   }
   return false;

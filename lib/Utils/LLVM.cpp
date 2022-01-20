@@ -185,3 +185,39 @@ Constant *stripBitCastsAndAlias(Constant *c) {
   } while (true);
   return c;
 }
+
+AllocRules::AllocRules(const Initializer &init) {
+  bool has_ignored_star = false;
+  for (auto &name : init.ignored) {
+    if (!name.empty() && name.back() == '*') {
+      has_ignored_star = true;
+      break;
+    }
+  }
+
+  for (const Function &F : init.M) {
+    std::string demangled = demangleName(F.getName());
+    if (init.alloc.find(demangled) != init.alloc.end())
+      alloc.insert(&F);
+    if (init.dealloc.find(demangled) != init.dealloc.end())
+      dealloc.insert({&F, init.dealloc.find(demangled)->second});
+    if (init.realloc.find(demangled) != init.realloc.end())
+      realloc.insert({&F, init.realloc.find(demangled)->second});
+    if (init.ignored.find(demangled) != init.ignored.end())
+      ignored.insert(&F);
+    if (has_ignored_star) {
+      for (auto &name : init.ignored) {
+        if (!name.empty() && name.back() == '*' &&
+            name.compare(0, name.length() - 1, demangled) == 0)
+          ignored.insert(&F);
+      }
+    }
+  }
+}
+
+bool AllocRules::should_ignore(const Function* fun) const {
+  return (alloc.find(fun) != alloc.end() ||
+      dealloc.find(fun) != dealloc.end() ||
+      realloc.find(fun) != realloc.end() ||
+      ignored.find(fun) != ignored.end());
+}

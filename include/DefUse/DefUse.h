@@ -44,10 +44,10 @@ class FieldChain : public std::shared_ptr<FieldChainElem> {
 public:
   FieldChain(FieldChainElem *chain)
     : std::shared_ptr<FieldChainElem>(chain), _hash(calc_hash(chain)) {}
-  FieldChain nest_offset(Type *type, ssize_t offset);
-  FieldChain nest_field(Type *type, ssize_t offset);
-  FieldChain nest_deref(void);
-  FieldChain nest_call(Function *fun, size_t arg_no);
+  FieldChain nest_offset(Type *type, ssize_t offset) const;
+  FieldChain nest_field(Type *type, ssize_t offset) const;
+  FieldChain nest_deref(void) const;
+  FieldChain nest_call(Function *fun, size_t arg_no) const;
   bool operator==(const FieldChain &rhs) const;
   size_t hash() const { return _hash; }
 };
@@ -67,20 +67,20 @@ struct FieldChainElem {
   FieldChain next;
 };
 
-inline FieldChain FieldChain::nest_offset(Type *type, ssize_t offset) {
+inline FieldChain FieldChain::nest_offset(Type *type, ssize_t offset) const {
   return FieldChain(new FieldChainElem{
     FieldChainElem::type::offset, { .offset = {type, offset} }, {*this}
   });
 }
-inline FieldChain FieldChain::nest_field(Type *type, ssize_t field_no) {
+inline FieldChain FieldChain::nest_field(Type *type, ssize_t field_no) const {
   return FieldChain(new FieldChainElem{
     FieldChainElem::type::field, { .field = {type, field_no} }, {*this}
   });
 }
-inline FieldChain FieldChain::nest_deref() {
+inline FieldChain FieldChain::nest_deref() const {
   return FieldChain(new FieldChainElem{ FieldChainElem::type::deref, {}, {*this} });
 }
-inline FieldChain FieldChain::nest_call(Function *fun, size_t arg_no) {
+inline FieldChain FieldChain::nest_call(Function *fun, size_t arg_no) const {
   return FieldChain(new FieldChainElem{
     FieldChainElem::type::call, { .call = {fun, arg_no} }, {*this}
   });
@@ -119,27 +119,6 @@ struct std::hash<llvm::defuse::FieldChain> {
   }
 };
 
-
-// TODO: We should restructure the files and put utilities in another file
-// TODO: lifecycle based alloc/dealloc rule
-// TODO: turn this into CLI arguments
-struct AllocRules {
-  // Current rule for alloc does not allow data flow into allocation
-  // functions, and the allocated pointer defaults to the return value.
-  std::set<std::string> alloc;
-  // Dealloc and realloc allow specifying the argument number of
-  // previously allocated value.
-  std::map<std::string, unsigned> dealloc;
-  std::map<std::string, unsigned> realloc;
-  // If the provided string has a single '*' character, it will ignore
-  // all functions that is prefixed with the name before '*'. Otherwise,
-  // use exact matching. This will be the last rule to match on.
-  std::set<std::string> ignored;
-
-  bool should_ignore(const std::string &name) const;
-};
-
-
 namespace llvm {
 namespace defuse {
 
@@ -160,8 +139,9 @@ public:
   typedef std::queue<std::tuple<Value *, FieldChain, ssize_t>> VisitQueue;
   typedef std::stack<Value *> VisitStack;
   typedef std::unordered_map<Function *, std::set<Type *>> FunctionSet;
-  typedef std::unordered_map<Instruction *, std::vector<Instruction *>>
-      ReturnCallMap;
+  // relation of callee_func -> caller_inst
+  typedef std::unordered_map<Function *, std::unordered_set<Instruction *>>
+      CalleeCallerMap;
   typedef std::unordered_map<Instruction *, ssize_t> HitSet;
 
   UserGraph(Value *v, CallGraph *cg, Function *target,
@@ -192,9 +172,16 @@ public:
 
  private:
   bool isIncompatibleFun(Function *fun);
-  void processUser(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk);
-  void processCall(CallSite call, Value *arg, FieldChain chain, ssize_t last, UserGraphWalkType walk);
-  void insertElement(Value *elem, FieldChain chain, ssize_t last, UserGraphWalkType walk);
+
+  void processUser(Value *elem, const FieldChain &chain, ssize_t last,
+      UserGraphWalkType walk);
+  void processCall(CallSite call, Value *arg, const FieldChain &chain,
+      ssize_t last, UserGraphWalkType walk);
+  void processArgument(Argument *arg, const FieldChain &chain,
+      ssize_t last, UserGraphWalkType walk);
+
+  void insertElement(Value *elem, const FieldChain &chain,
+      ssize_t last, UserGraphWalkType walk);
   void addHitPoint(Instruction *inst, ssize_t last);
 
  public:
@@ -210,7 +197,7 @@ public:
   VisitStack visit_stack;
   CallGraph *callGraph;
   Function *target;
-  ReturnCallMap returnCallMap;
+  CalleeCallerMap calleeCallerMap;
   HitSet hitPoints;
   const AllocRules &alloc_rules;
 };
