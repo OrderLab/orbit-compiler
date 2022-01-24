@@ -16,17 +16,14 @@ ObiWanAnalysis::ObiWanAnalysis(Value *root, Function *start, Function *end,
 {}
 
 void ObiWanAnalysis::performDefUse() {
-  ug.run(UserGraphWalkType::BFS);
+  calcIsAllocationPoint = ug.run(UserGraphWalkType::BFS);
+  if (!calcIsAllocationPoint.getValue()) return;
 
-  if (!isAllocationPoint()) return;
   printCallSite(root);
   // callGraph.printPath(start, end);
   errs() << '\n';
 }
 
 bool ObiWanAnalysis::isAllocationPoint() {
-  if (!calcIsAllocationPoint.hasValue())
-    calcIsAllocationPoint = ug.isFunctionVisited(end) && ug.functionGlobalVarVisited(end);
-    // calcIsAllocationPoint = ug.functionGlobalVarVisited(end);
-  return calcIsAllocationPoint.getValue();
+  return calcIsAllocationPoint.getValueOr(false);
 }

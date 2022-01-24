@@ -65,7 +65,10 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
         "ngx_alloc", "ngx_calloc", "ngx_memalign",
         "ngx_palloc", "ngx_pcalloc", "ngx_pnalloc", "ngx_pmemalign", "ngx_palloc_large",
         // Apache
-        "apr_pcalloc", "apr_palloc",
+        "apr_pcalloc", "apr_palloc", "ap_malloc", "ap_calloc",
+        "apr_itoa", "apr_ltoa", "apr_off_t_toa",
+        "apr_pmemdup", "apr_pstrdup", "apr_pstrmemdup", "apr_pstrndup",
+        "apr_pvsprintf", "apr_psprintf", "apr_pstrcat", "apr_pstrcatv",
       },
       .dealloc{
         // standard
@@ -90,6 +93,8 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
         "mem_heap_*", "ut_allocator*",
         // Redis
         "zmalloc_*", "je_*",
+        // Apache
+        "apr_allocator_*", "apr_pool_*",
         // Nginx
         "ngx_pool_*", "ngx_palloc_*", "ngx_create_pool", "ngx_destroy_pool", "ngx_reset_pool",
       }
@@ -163,7 +168,7 @@ struct ObiWanAnalysisPass : public llvm::ModulePass {
       if (!(cs.isCall() || cs.isInvoke())) continue;
       if (rules.should_ignore(cs.getCaller())) continue;
 
-      // if (demangleFunctionName(cs.getCaller()) != "zslCreate") continue;
+      // if (demangleFunctionName(cs.getCaller()) != "dbg_func_name") continue;
 
       ObiWanAnalysis ob(alloc_site, cs.getCaller(), targetFun, rules);
       ob.performDefUse();

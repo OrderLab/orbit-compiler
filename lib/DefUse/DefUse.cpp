@@ -19,9 +19,15 @@ using namespace llvm;
 using namespace llvm::defuse;
 
 // const bool DBG = true;
-const bool DBG = false;
+// const bool DBG = false;
+static bool DBG = false;
+// static bool explain = true;
+static bool explain = false;
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
+
+Optional<FieldChain> match_gep(FieldChain chain, GetElementPtrInst *gep, bool *hit);
+Optional<FieldChain> match_deref(FieldChain chain);
 
 size_t FieldChain::calc_hash(const FieldChainElem *chain) {
   if (chain == nullptr) return 0;
@@ -95,117 +101,209 @@ static void explainDefUseChain(const UserGraph::UserNodeList &userList,
   errs() << " === End explain ===\n";
 }
 
-static bool functionGlobalVarVisitedHelper(
-    Function *fun,
-    std::unordered_set<Function*> &visited_fuctions,
-    const UserGraph::VisitedNodeSet &visited_values,
-    const UserGraph::HitSet &hitPoints,
-    const UserGraph::UserNodeList &userList)
-{
-  bool DBG = false;
-  if (fun == nullptr) return false;
-  if (visited_fuctions.find(fun) != visited_fuctions.end())
+/* Entry function of allocation point usage analysis */
+bool UserGraph::run(UserGraphWalkType t) {
+  if (t == UserGraphWalkType::DFS) {
+    // FIXME: DFS will not work right now
     return false;
-  visited_fuctions.insert(fun);
-  // FIXME: false data flow to global variables
-  // FIXME: write rules for data flow into and out of allocator functions
-  if (fun->getName().find("je_") == 0 ||
-      fun->getName().find("llvm.") == 0)
-    return false;
-  /* if (fun->getName().find("rdbSaveRio") == 0)
-    DBG = true; */
-  if (DBG) errs() << " === begin global var check === : " << fun->getName() << '\n';
+    doDFS(false);
+    prepareSecondPhase(t);
+    doDFS(true);
+    // TODO: functionGlobalVarVisited();
+  } else {
+    doBFS(false);
 
-  for (auto &I : instructions(fun)) {
-    Instruction *inst = &I;
-
-    if (hitPoints.find(inst) != hitPoints.end()) {
-      errs() << "Is a hit point\n";
-      if (DBG)
-        explainDefUseChain(userList, inst, hitPoints.find(inst)->second);
+    prepareSecondPhase(t);
+    if (doBFS(true))
       return true;
-    }
 
-    if (LoadInst *load = dyn_cast<LoadInst>(inst)) {
-      if (DBG) errs() << "    " << *inst << '\n';
-      // Is a global variable, and is a pointer type
-      Value *op0 = load->getOperand(0);
-      // const Type *op0ty = op0->getType();
-      if (isa<GlobalVariable>(op0)) {
-        if (// op0ty->isPointerTy() && op0ty->getContainedType(0)->isPointerTy() &&
-          visited_values.find(op0) != visited_values.end())
-        {
-          // if (1 || DBG) errs() << "    global var name: " << op0->getName() << '\n';
-          // return true;
-        }
-      } else if (const ConstantExpr *expr = dyn_cast<ConstantExpr>(op0)) {
-        // Getting a field of global variable
-        if (expr->getOpcode() != Instruction::GetElementPtr) continue;
-        Constant *op0op0 = expr->getOperand(0);
-        if (isa<GlobalVariable>(op0op0) &&
-          visited_values.find(op0op0) != visited_values.end()) {
-          // if (1 || DBG) errs() << "    global var name: " << op0op0->getName() << '\n';
-          // return true;
-        }
-      }
-    } else if (GetElementPtrInst *getelem = dyn_cast<GetElementPtrInst>(inst)) {
-      // Is a global variable, and is a pointer type
-      Value *op0 = getelem->getOperand(0);
-      // const Type *getelemty = getelem->getType();
-      if (isa<GlobalVariable>(op0) &&
-          // getelemty->isPointerTy() &&
-          visited_values.find(op0) != visited_values.end())
-      {
-        // if (1 || DBG) errs() << "    global var name: " << op0->getName() << '\n';
-        // return true;
-      }
-    } else if (isa<CallInst>(inst) || isa<InvokeInst>(inst)) {
-      // For newer LLVm, cast to Callbase
-      Function *callee = CallSite(inst).getCalledFunction();
-      if (functionGlobalVarVisitedHelper(callee, visited_fuctions,
-            visited_values, hitPoints, userList))
-        return true;
-    }
+    if (prepareThirdPhase(t))
+      return true;
+    return doBFS(true);
   }
-  if (DBG) errs() << " === end global var check === : " << fun->getName() << '\n';
   return false;
 }
 
-bool UserGraph::functionGlobalVarVisited(Function *fun) {
-  if (DBG) errs() << "End function is : " << fun->getName() << '\n';
-  std::unordered_set<Function*> visited_fuctions;
-  return functionGlobalVarVisitedHelper(fun, visited_fuctions, visited,
-      hitPoints, userList);
+/*
+ * Rebuild visited information to only include target function arguments
+ * and global variables. Also rebuild queue/stack to start second phase
+ * of data flow analysis.
+ */
+void UserGraph::prepareSecondPhase(UserGraphWalkType walk) {
+  // Clear stack and queue
+  visit_stack = VisitStack();
+  visit_queue = VisitQueue();
+
+  // Rebuild visited information of args and consts, but only add arguments
+  // to the queue/stack
+  VisitedNodeSet new_visited;
+  for (auto &[value, chains] : visited) {
+    if (isa<Constant>(value)) {
+      new_visited.insert({value, chains});
+    } else if (Argument *arg = dyn_cast<Argument>(value)) {
+      if (arg->getParent() == target) {
+        new_visited.insert({value, chains});
+        if (DBG) errs() << "tot chains: " << chains.size() << '\n';
+        for (auto &[chain, last] : chains) {
+          if (DBG) errs() << "insert value: " << *value << '\n'
+                          << "       chain: " << chain << '\n';
+          insertElementWalk(value, chain, last, walk);
+        }
+      }
+    }
+  }
+  visited.swap(new_visited);
+
+  // Clear callee-caller map. It will be automatically re-built in target
+  // function scope when running data flow analysis from the arguments.
+  calleeCallerMap.clear();
 }
 
-bool UserGraph::isFunctionVisited(Function *fun) {
-  return functionsVisited.count(fun) != 0;
+bool UserGraph::prepareThirdPhase(UserGraphWalkType walk) {
+  // Clear stack and queue
+  visit_stack = VisitStack();
+  visit_queue = VisitQueue();
+
+  // Rebuild visited information of consts
+  VisitedNodeSet new_visited;
+  for (auto &[value, chains] : visited) {
+    if (isa<Constant>(value))
+      new_visited.insert({value, chains});
+  }
+  visited.swap(new_visited);
+
+  // Clear callee-caller map
+  calleeCallerMap.clear();
+
+  // Build call scope, and instructions to global variables to queue/stack
+  return addCallScope(target, walk);
 }
 
-void UserGraph::doDFS() {
-  visited[root].insert(nullptr);
+bool UserGraph::addCallScope(Function *fun, UserGraphWalkType walk) {
+  if (fun == nullptr || isIncompatibleFun(fun)) return false;
+
+  // Find visits, match the chains, and insert elements to the queue/stack.
+  // This helper also handles nested constexpr GEP.
+  auto find_match_insert = [this, walk](Instruction *inst, Constant *c,
+                                        ssize_t *hit_last, auto match)
+  {
+    // Helper function: handling simple nesting of bitcast, and find matching
+    // visits, and insert chains
+    auto find_match_insert_const = [this, walk](Instruction *inst, Constant *c,
+                                                ssize_t *hit_last, auto match)
+    {
+      auto c_visit = visited.find(stripBitCastsAndAlias(c));
+      if (c_visit != visited.end()) {
+        for (auto &[chain, last] : c_visit->second) {
+          bool hit = false;
+          auto newchain = match(chain, &hit);
+          if (hit) {
+            *hit_last = last;
+            return true;
+          }
+          if (newchain.hasValue())
+            insertElement(inst, newchain.getValue(), last, walk);
+        }
+      }
+      *hit_last = -1;
+      return c_visit != visited.end();
+    };
+
+    // Case 1: Is a simple constexpr, probably a global variable
+    if (find_match_insert_const(inst, c, hit_last, match))
+      return;
+
+    // Case 2: The variable is nested in a constexpr GEP
+    if (ConstantExpr *ce = dyn_cast<ConstantExpr>(c)) {
+      if (ce->getOpcode() != Instruction::GetElementPtr) return;
+
+      auto *gep = dyn_cast<GetElementPtrInst>(ce->getAsInstruction());
+      if (Constant *c = dyn_cast<Constant>(gep->getOperand(0))) {
+        // Nest the match: match the GEP first, and then the outer `match`
+        find_match_insert_const(inst, c, hit_last,
+            [match, gep](const FieldChain &chain, bool *hit)
+        {
+          // Nothing we can do to know the `last` for constexpr GEP match
+          auto newchain = match_gep(chain, gep, nullptr);
+          if (newchain.hasValue())
+            return match(newchain.getValue(), hit);
+          return newchain;  // This is None
+        });
+      }
+      delete gep;
+    }
+  };
+
+  ssize_t hit_last = -1;
+
+  // For each instruction in function, we only consider 2 cases that would
+  // access global variable: load, GEP. We will recursively do this for calls.
+  for (Instruction &I : instructions(fun)) {
+    // Loading a non-variable is probably global variable
+    if (LoadInst *load = dyn_cast<LoadInst>(&I)) {
+      if (Constant *op0 = dyn_cast<Constant>(load->getOperand(0)))
+        find_match_insert(&I, op0, &hit_last, [](const FieldChain &chain, bool *hit) {
+          auto newchain = match_deref(chain);
+          *hit = newchain.hasValue() && newchain.getValue().get() == nullptr;
+          return newchain;
+        });
+    }
+    // GEP accessing a constexpr is probably global variable
+    else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(&I)) {
+      if (Constant *op0 = dyn_cast<Constant>(gep->getOperand(0))) {
+        find_match_insert(&I, op0, &hit_last, [gep](const FieldChain &chain, bool *hit) {
+          return match_gep(chain, gep, hit);
+        });
+      }
+    }
+    // Recursively handle function calls
+    else if (isa<CallInst>(&I) || isa<InvokeInst>(&I)) {
+      auto [caller, callee, _] = extractCallerCallee(CallSite(&I), 0);
+      if (callee == nullptr) continue;
+
+      auto callee_insts = calleeCallerMap.find(callee);
+      if (callee_insts == calleeCallerMap.end()) {
+        calleeCallerMap[callee].insert(&I);
+        addCallScope(callee, walk);
+      } else {
+        callee_insts->second.insert(&I);
+      }
+    }
+
+    if (hit_last != -1) {
+      if (explain) explainDefUseChain(userList, &I, hit_last);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void UserGraph::doDFS(bool scoped) {
+  visited[root].insert({nullptr, -1});
   visit_stack.push(root);
   while (!visit_stack.empty()) {
-    if (isFunctionVisited(target)) return;
+    if (functionsVisited.count(target) != 0) return;
     Value *elem = visit_stack.top();
     visit_stack.pop();
-    processUser(elem, nullptr, -1, UserGraphWalkType::DFS);
+    processUser(elem, nullptr, -1, UserGraphWalkType::DFS, scoped);
   }
 }
 
-void UserGraph::doBFS() {
+bool UserGraph::doBFS(bool scoped) {
   if (DBG) errs() << "Begin BFS (root: " << *root << ")\n\n";
-  visited[root].insert(nullptr);
-  visit_queue.push({root, nullptr, -1});
-  /* if (Instruction *ins = dyn_cast<Instruction>(root))
-    errs() << " === root is in : " << ins->getFunction()->getName() << '\n'; */
+  if (!scoped) {
+    visited[root].insert({nullptr, -1});
+    visit_queue.push({root, nullptr, -1});
+  }
   visit_queue.push({nullptr, nullptr, -1});  // a dummy element marking end of a level
   int level = 0;
   while (!visit_queue.empty()) {
-    // if (isFunctionVisited(target)) break;
     auto [head, chain, last] = visit_queue.front();
     if (head != nullptr) {
-      processUser(head, chain, last, UserGraphWalkType::BFS);
+      bool ret = processUser(head, chain, last, UserGraphWalkType::BFS, scoped);
+      if (scoped && ret)
+        return true;
     }
     visit_queue.pop();  // remove the front element
     if (!visit_queue.empty()) {
@@ -227,6 +325,7 @@ void UserGraph::doBFS() {
     }
   }
   if (DBG) errs() << "\nEnd BFS\n";
+  return false;
 }
 
 /*
@@ -360,11 +459,30 @@ Optional<FieldChain> match_deref(FieldChain chain) {
   return chain->next;
 }
 
+#define returnTrueIfScoped do { \
+    if (scoped) { \
+      if (explain) explainDefUseChain(userList, dyn_cast<Instruction>(elem), last); \
+      return true; \
+    } \
+  } while (0)
+
+const std::set<std::string> names{"sdsMakeRoomFor", "sdssplitlen", "processInlineBuffer"};
 /*
  * Search for dst if it is src, and search for dst if it is src.
  */
-void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, UserGraphWalkType walk) {
-  // bool DBG = true;
+bool UserGraph::processUser(Value *elem, const FieldChain &chain,
+                            ssize_t last, UserGraphWalkType walk, bool scoped)
+{
+  // bool DBG = false;
+  /* if (Instruction *ins = dyn_cast<Instruction>(elem)) {
+    auto demangled = demangleFunctionName(ins->getFunction());
+    if (names.find(demangled) != names.end())
+      DBG = true;
+  } else if (Argument *arg = dyn_cast<Argument>(elem)) {
+    auto demangled = demangleFunctionName(arg->getParent());
+    if (names.find(demangled) != names.end())
+      DBG = true;
+  } */
   if (DBG) errs() << " === begin process user === : " << *elem << '\n'
                   << "               chain is === : " << chain << '\n';
   if (Instruction *ins = dyn_cast<Instruction>(elem)) {
@@ -377,7 +495,7 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
   // We would not expect store instruction could have a user
   if (isa<StoreInst>(elem)) {
     // errs() << "Unexpected store instruction! : " << *elem << '\n';
-    return;
+    return false;
   }
 
   /*
@@ -394,7 +512,7 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
    */
   if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(elem)) {
     auto newchain = nest_gep(chain, gep);
-    if (newchain == None) return;
+    if (newchain == None) return false;
     insertElement(gep->getOperand(0), newchain.getValue(), last, walk);
   } else if (LoadInst *load = dyn_cast<LoadInst>(elem)) {
     insertElement(load->getOperand(0), chain.nest_deref(), last, walk);
@@ -425,12 +543,12 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
           insertElement(expr->getOperand(0), newchain.getValue(), last, walk);
       } else {
         // Unsupported global var usage
-        return;
+        return false;
       }
     } else if (Function *fun = dyn_cast<Function>(val)) {
       (void)fun;
       // TODO: add function pointer into data flow analysis
-      return;
+      return false;
       /* auto newchain = match_call(chain, fun);
       if (newchain.hasValue()) {
         if (newchain.getValue().get() == nullptr)
@@ -440,12 +558,12 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
       // Do nothing, fall to search for users
     } else {
       // Other (ConstantData, etc.), ignore and don't find users
-      return;
+      return false;
     }
   }
   // Modification reaches to an argument
   else if (Argument *arg = dyn_cast<Argument>(elem)) {
-    processArgument(arg, chain, last, walk);
+    processArgument(arg, chain, last, walk, scoped);
   }
   // Track data flow of returned value in the caller
   else if (ReturnInst *ret = dyn_cast<ReturnInst>(elem)) {
@@ -453,7 +571,7 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
     if (calleeCallerMap.count(this_func) != 0) {
       for (auto inst : calleeCallerMap[this_func])
         insertElement(inst, chain, last, walk);
-    } else {
+    } else if (!scoped) {
       for (auto user : this_func->users()) {
         if (Instruction *inst = dyn_cast<Instruction>(user)) {
           if (!(isa<CallInst>(inst) || isa<InvokeInst>(inst)))
@@ -475,13 +593,15 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
   // TODO: Add option to enable this, otherwise MySQL analysis is too slow,
   // and generates much more false positives
   /* else if (isa<CallInst>(elem) || isa<InvokeInst>(elem)) {
-    CallSite call(elem);
-    auto [caller, callee, arg_no] = extractCallerCallee(call, 0);
-    if (callee && !isIncompatibleFun(callee)) {
-      callGraph->addEdge(caller, callee);
-      for (auto &I : instructions(callee)) {
-        if (ReturnInst *ret = dyn_cast<ReturnInst>(&I)) {
-          insertElement(ret->getOperand(0), chain, last, walk);
+    if (chain != nullptr) {
+      CallSite call(elem);
+      auto [caller, callee, arg_no] = extractCallerCallee(call, 0);
+      if (callee && !isIncompatibleFun(callee)) {
+        callGraph->addEdge(caller, callee);
+        for (auto &I : instructions(callee)) {
+          if (ReturnInst *ret = dyn_cast<ReturnInst>(&I)) {
+            insertElement(ret->getOperand(0), chain, last, walk);
+          }
         }
       }
     }
@@ -506,6 +626,8 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
    * One exception is that src finding for StoreInst is merged into this loop.
    */
   for (User *user : elem->users()) {
+    if (scoped && !isa<Instruction>(user)) continue;
+
     if (DBG) errs() << "    user: " << *user << '\n';
     if (StoreInst *store = dyn_cast<StoreInst>(user)) {
       if (elem == store->getOperand(0)) {
@@ -518,22 +640,23 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
         auto newchain = match_deref(chain);
         if (newchain.hasValue()) {
           if (newchain.getValue().get() == nullptr)
-            addHitPoint(store, last);
+            returnTrueIfScoped;
           insertElement(store->getOperand(0), newchain.getValue(), last, walk);
         }
       }
-    } else if (LoadInst *load = dyn_cast<LoadInst>(user)) {
+    } else if (isa<LoadInst>(user)) {
       auto newchain = match_deref(chain);
       if (newchain.hasValue()) {
         if (newchain.getValue().get() == nullptr)
-          addHitPoint(load, last);
+          returnTrueIfScoped;
         insertElement(user, newchain.getValue(), last, walk);
       }
     } else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(user)) {
       bool hit;
       auto newchain = match_gep(chain, gep, &hit);
       if (hit)
-        addHitPoint(gep, last);
+        returnTrueIfScoped;
+        // addHitPoint(gep, last);
       if (newchain.hasValue())
         insertElement(user, newchain.getValue(), last, walk);
     } else if (isa<ExtractValueInst>(user)) {
@@ -573,7 +696,8 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
         /* auto newchain = match_call(chain, fun);
         if (newchain.hasValue()) {
           if (newchain.getValue().get() == nullptr)
-            addHitPoint(load);
+            returnTrueIfScoped;
+            // addHitPoint(load);
         } */
       } else if (isa<GlobalVariable>(c)) {
         // Do nothing, fall to search for users
@@ -607,7 +731,10 @@ void UserGraph::processUser(Value *elem, const FieldChain &chain, ssize_t last, 
       }
     }
   }
+  return false;
 }
+
+#undef returnTrueIfScoped
 
 void UserGraph::processCall(CallSite call, Value *arg, const FieldChain &chain,
                             ssize_t last, UserGraphWalkType walk)
@@ -632,7 +759,7 @@ void UserGraph::processCall(CallSite call, Value *arg, const FieldChain &chain,
 }
 
 void UserGraph::processArgument(Argument *arg, const FieldChain &chain,
-    ssize_t last, UserGraphWalkType walk)
+    ssize_t last, UserGraphWalkType walk, bool scoped)
 {
   // Must be a pointer argument
   if (!arg->getType()->isPointerTy()) return;
@@ -644,12 +771,13 @@ void UserGraph::processArgument(Argument *arg, const FieldChain &chain,
 
   auto add_caller_arg = [this, arg, &chain, last, walk, fun](CallSite call_site) {
     // TODO: handle indirect call
-    if (call_site.getCalledFunction() != fun)
+    auto [caller, callee, _] = extractCallerCallee(call_site, arg->getArgNo());
+    if (callee != fun)
       return;
     Value *caller_arg = call_site.getArgOperand(arg->getArgNo());
     if (DBG) errs() << "    func user: " << *call_site.getInstruction() << '\n';
-    if (DBG) errs() << "    func arg: " << arg->getArgNo()
-      << " user: " << *caller_arg << '\n';
+    if (DBG) errs() << "       caller: " << caller->getName()
+      << " arg: " << arg->getArgNo() << " user: " << *caller_arg << '\n';
     insertElement(caller_arg, chain, last, walk);
   };
 
@@ -658,7 +786,7 @@ void UserGraph::processArgument(Argument *arg, const FieldChain &chain,
     for (Instruction *call_inst : calleeCallerMap.find(fun)->second) {
       add_caller_arg(CallSite(call_inst));
     }
-  } else {
+  } else if (!scoped) {
     for (User *call_inst : fun->users()) {
       if (isa<CallInst>(call_inst) || isa<InvokeInst>(call_inst)) {
         add_caller_arg(CallSite(call_inst));
@@ -673,34 +801,42 @@ void UserGraph::processArgument(Argument *arg, const FieldChain &chain,
   }
 }
 
+/* Insert to queue/stack without any check */
+void UserGraph::insertElementWalk(Value *elem, const FieldChain &chain,
+                                  ssize_t last, UserGraphWalkType walk)
+{
+  if (walk == UserGraphWalkType::DFS) {
+    visit_stack.push(elem);
+  } else {
+    ssize_t next = userList.size();
+    userList.push_back({elem, chain, last});
+    visit_queue.push({elem, chain, next});
+  }
+}
+
 void UserGraph::insertElement(Value *elem, const FieldChain &chain,
                               ssize_t last, UserGraphWalkType walk)
 {
-  std::unordered_set<FieldChain> &visited_elem = visited[elem];
-  bool is_new_chain = visited_elem.insert(chain).second;
-  if (is_new_chain && visited_elem.size() <= 3) {
+  auto &visited_elem = visited[elem];
+  bool is_new_chain = visited_elem.insert({chain, last}).second;
+  if (is_new_chain && visited_elem.size() <= 3 && chain.length() < 10) {
+  // if (is_new_chain) {
     if (DBG) errs() << "        insert: " << *elem << '\n'
                     << "         chain: " << chain << '\n';
-    if (walk == UserGraphWalkType::DFS)
-      visit_stack.push(elem);
-    else {
-      ssize_t next = userList.size();
-      userList.push_back({elem, chain, last});
-      visit_queue.push({elem, chain, next});
-    }
+    insertElementWalk(elem, chain, last, walk);
   } else {
     if (DBG) errs() << "        insert failure: is_new_chain=" << is_new_chain
       << " size=" << visited_elem.size() << '\n';
   }
   if (DBG) {
-    for (auto chain : visited_elem)
+    for (auto [chain, last] : visited_elem)
       errs() << "         new chain has: " << chain << '\n';
   }
 }
 
-void UserGraph::addHitPoint(Instruction *inst, ssize_t last) {
+/* void UserGraph::addHitPoint(Instruction *inst, ssize_t last) {
   hitPoints.insert({inst, last});
-}
+} */
 
 bool UserGraph::isIncompatibleFun(Function *fun) {
   if (fun == NULL || fun->isIntrinsic()) return true;
@@ -708,6 +844,7 @@ bool UserGraph::isIncompatibleFun(Function *fun) {
   if (name.rfind("std", 0) == 0 || name.rfind("boost", 0) == 0 ||
       name.rfind("ib::logger", 0) == 0 || name.rfind("PolicyMutex", 0) == 0 ||
       name.rfind("__gnu", 0) == 0 || name.rfind("ut_allocator", 0) == 0 ||
+      name.rfind("llvm.", 0) == 0 ||
       alloc_rules.should_ignore(fun)) {
     return true;
   }

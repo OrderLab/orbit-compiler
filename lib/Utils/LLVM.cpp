@@ -206,9 +206,10 @@ AllocRules::AllocRules(const Initializer &init) {
     if (init.ignored.find(demangled) != init.ignored.end())
       ignored.insert(&F);
     if (has_ignored_star) {
-      for (auto &name : init.ignored) {
-        if (!name.empty() && name.back() == '*' &&
-            name.compare(0, name.length() - 1, demangled) == 0)
+      for (auto &pattern : init.ignored) {
+        size_t prefix_len = pattern.length() - 1;
+        if (!pattern.empty() && pattern.back() == '*' &&
+            pattern.compare(0, prefix_len, demangled, 0, prefix_len) == 0)
           ignored.insert(&F);
       }
     }

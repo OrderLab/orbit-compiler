@@ -40,16 +40,17 @@ namespace defuse {
 struct FieldChainElem;
 class FieldChain : public std::shared_ptr<FieldChainElem> {
   size_t _hash;
+  size_t _len;
   static size_t calc_hash(const FieldChainElem *chain);
 public:
-  FieldChain(FieldChainElem *chain)
-    : std::shared_ptr<FieldChainElem>(chain), _hash(calc_hash(chain)) {}
+  FieldChain(FieldChainElem *chain);
   FieldChain nest_offset(Type *type, ssize_t offset) const;
   FieldChain nest_field(Type *type, ssize_t offset) const;
   FieldChain nest_deref(void) const;
   FieldChain nest_call(Function *fun, size_t arg_no) const;
   bool operator==(const FieldChain &rhs) const;
   size_t hash() const { return _hash; }
+  size_t length() const { return _len; }
 };
 raw_ostream &operator<<(raw_ostream &os, const FieldChain &chain);
 
@@ -66,6 +67,12 @@ struct FieldChainElem {
   // maybe: optimize alloc/dealloc of shared_ptr to use lifecycle-based
   FieldChain next;
 };
+
+inline FieldChain::FieldChain(FieldChainElem *chain)
+  : std::shared_ptr<FieldChainElem>(chain), _hash(calc_hash(chain))
+{
+  _len = chain ? chain->next.length() + 1 : 0;
+}
 
 inline FieldChain FieldChain::nest_offset(Type *type, ssize_t offset) const {
   return FieldChain(new FieldChainElem{
@@ -135,14 +142,14 @@ public:
   // Current value or use point, then the idx of last one (-1 means the start)
   typedef std::tuple<Value *, FieldChain, ssize_t> UserNode;
   typedef std::vector<UserNode> UserNodeList;
-  typedef std::unordered_map<Value *, std::unordered_set<FieldChain>> VisitedNodeSet;
+  typedef std::unordered_map<Value *, std::unordered_map<FieldChain, ssize_t>>
+      VisitedNodeSet;
   typedef std::queue<std::tuple<Value *, FieldChain, ssize_t>> VisitQueue;
   typedef std::stack<Value *> VisitStack;
   typedef std::unordered_map<Function *, std::set<Type *>> FunctionSet;
   // relation of callee_func -> caller_inst
   typedef std::unordered_map<Function *, std::unordered_set<Instruction *>>
       CalleeCallerMap;
-  typedef std::unordered_map<Instruction *, ssize_t> HitSet;
 
   UserGraph(Value *v, CallGraph *cg, Function *target,
             const AllocRules &alloc_rules, int depth = -1)
@@ -152,43 +159,39 @@ public:
   {}
   ~UserGraph() {}
 
-  void run(UserGraphWalkType t = UserGraphWalkType::DFS) {
-    if (t == UserGraphWalkType::DFS)
-      doDFS();
-    else
-      doBFS();
-  }
+  bool run(UserGraphWalkType t = UserGraphWalkType::DFS);
 
-  FunctionSet::iterator func_begin() { return functionsVisited.begin(); }
-  FunctionSet::iterator func_end() { return functionsVisited.end(); }
+  // functions for second phase analysis
+  void prepareSecondPhase(UserGraphWalkType walk);
+  bool prepareThirdPhase(UserGraphWalkType walk);
+  bool addCallScope(Function *fun, UserGraphWalkType walk);
 
-  bool isFunctionVisited(Function *);
-  bool functionGlobalVarVisited(Function *fun);
   void printCallSite();
 
- protected:
-  void doDFS();
-  void doBFS();
+protected:
+  void doDFS(bool scoped);
+  bool doBFS(bool scoped);
 
- private:
+private:
   bool isIncompatibleFun(Function *fun);
 
-  void processUser(Value *elem, const FieldChain &chain, ssize_t last,
-      UserGraphWalkType walk);
+  bool processUser(Value *elem, const FieldChain &chain, ssize_t last,
+      UserGraphWalkType walk, bool scoped);
   void processCall(CallSite call, Value *arg, const FieldChain &chain,
       ssize_t last, UserGraphWalkType walk);
   void processArgument(Argument *arg, const FieldChain &chain,
-      ssize_t last, UserGraphWalkType walk);
+      ssize_t last, UserGraphWalkType walk, bool scoped);
 
   void insertElement(Value *elem, const FieldChain &chain,
       ssize_t last, UserGraphWalkType walk);
-  void addHitPoint(Instruction *inst, ssize_t last);
+  void insertElementWalk(Value *elem, const FieldChain &chain,
+      ssize_t last, UserGraphWalkType walk);
 
- public:
+public:
   FunctionSet functionsVisited;
   std::vector<Function *> funVector;
 
- private:
+private:
   Value *root;
   int maxDepth;
   UserNodeList userList;
@@ -198,7 +201,6 @@ public:
   CallGraph *callGraph;
   Function *target;
   CalleeCallerMap calleeCallerMap;
-  HitSet hitPoints;
   const AllocRules &alloc_rules;
 };
 
